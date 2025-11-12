@@ -2,6 +2,7 @@ packages:
   - "apps/*"
   - "packages/**"
   - "tooling/*"
+  - "nlog-proxy-server"
 
 # Define a catalog of version ranges.
 catalog:
