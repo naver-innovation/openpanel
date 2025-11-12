@@ -19,7 +19,11 @@
     "migrate": "pnpm -r --filter db run migrate",
     "migrate:deploy": "pnpm -r --filter db run migrate:deploy",
     "dev": "pnpm -r --parallel testing",
+    "dev:api": "pnpm --filter api run testing",
+    "dev:worker": "pnpm --filter worker run testing",
+    "dev:start": "pnpm --filter start run dev",
     "dev:public": "pnpm -r --filter public dev",
+    "dev:proxy": "pnpm --filter @openpanel/nlog-proxy run dev",
     "format": "biome format .",
     "format:fix": "biome format --write .",
     "lint": "biome check .",
@@ -50,8 +54,10 @@
     "protobufjs",
     "sharp"
   ],
+  "cross-env": "^10.1.0",
   "devDependencies": {
     "@biomejs/biome": "1.9.1",
+    "cross-env": "^10.1.0",
     "depcheck": "^1.4.7",
     "simple-git-hooks": "^2.12.1",
     "vitest": "^3.0.4"
