@@ -47,6 +47,15 @@ jobs:
       - name: Clean up Docker to free disk space
         run: docker system prune -af --volumes || true
 
+      - name: Create swap space
+        run: |
+          sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "Swap enabled:"
+          free -h
+
       - name: Log in to OCIR
         uses: docker/login-action@v3
         with:
@@ -59,8 +68,8 @@ jobs:
           IMAGE_TAG: ${{ env.registry }}/wasl-op/op-api:${{ needs.generate-tag.outputs.image_tag }}
         run: |
           docker build \
-            --platform linux/amd64 \
             --build-arg DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
+            --build-arg NODE_BUILD_MAX_MEMORY="2048" \
             -f "apps/api/Dockerfile" \
             -t "$IMAGE_TAG" \
             .
@@ -78,6 +87,15 @@ jobs:
       - name: Clean up Docker to free disk space
         run: docker system prune -af --volumes || true
 
+      - name: Create swap space
+        run: |
+          sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "Swap enabled:"
+          free -h
+
       - name: Log in to OCIR
         uses: docker/login-action@v3
         with:
@@ -90,8 +108,8 @@ jobs:
           IMAGE_TAG: ${{ env.registry }}/wasl-op/op-worker:${{ needs.generate-tag.outputs.image_tag }}
         run: |
           docker build \
-            --platform linux/amd64 \
             --build-arg DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
+            --build-arg NODE_BUILD_MAX_MEMORY="2048" \
             -f "apps/worker/Dockerfile" \
             -t "$IMAGE_TAG" \
             .
@@ -109,6 +127,15 @@ jobs:
       - name: Clean up Docker to free disk space
         run: docker system prune -af --volumes || true
 
+      - name: Create swap space
+        run: |
+          sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "Swap enabled:"
+          free -h
+
       - name: Log in to OCIR
         uses: docker/login-action@v3
         with:
@@ -121,8 +148,8 @@ jobs:
           IMAGE_TAG: ${{ env.registry }}/wasl-op/op-dashboard:${{ needs.generate-tag.outputs.image_tag }}
         run: |
           docker build \
-            --platform linux/amd64 \
             --build-arg NO_CLOUDFLARE="1" \
+            --build-arg NODE_BUILD_MAX_MEMORY="2048" \
             -f "apps/start/Dockerfile" \
             -t "$IMAGE_TAG" \
             .
