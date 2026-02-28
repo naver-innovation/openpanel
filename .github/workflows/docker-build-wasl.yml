@@ -15,7 +15,7 @@ on:
           - dashboard
 
 env:
-  registry: "me-riyadh-1.ocir.io/axlo4g31gl45"
+  registry: ${{ secrets.OCIR_REGISTRY }}
   username: ${{ secrets.OCIR_USERNAME }}
   password: ${{ secrets.OCIR_PASSWORD }}
 
