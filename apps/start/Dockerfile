@@ -41,9 +41,6 @@ COPY patches ./patches
 # BUILD
 FROM base AS build
 
-ARG NODE_BUILD_MAX_MEMORY=2560
-ENV NODE_OPTIONS="--max-old-space-size=${NODE_BUILD_MAX_MEMORY}"
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     make \
