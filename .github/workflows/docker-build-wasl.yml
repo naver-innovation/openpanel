@@ -59,8 +59,8 @@ jobs:
           IMAGE_TAG: ${{ env.registry }}/wasl-op/op-api:${{ needs.generate-tag.outputs.image_tag }}
         run: |
           docker build \
+            --platform linux/amd64 \
             --build-arg DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
-            --build-arg NODE_BUILD_MAX_MEMORY="2048" \
             -f "apps/api/Dockerfile" \
             -t "$IMAGE_TAG" \
             .
@@ -90,8 +90,8 @@ jobs:
           IMAGE_TAG: ${{ env.registry }}/wasl-op/op-worker:${{ needs.generate-tag.outputs.image_tag }}
         run: |
           docker build \
+            --platform linux/amd64 \
             --build-arg DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
-            --build-arg NODE_BUILD_MAX_MEMORY="2048" \
             -f "apps/worker/Dockerfile" \
             -t "$IMAGE_TAG" \
             .
@@ -121,8 +121,8 @@ jobs:
           IMAGE_TAG: ${{ env.registry }}/wasl-op/op-dashboard:${{ needs.generate-tag.outputs.image_tag }}
         run: |
           docker build \
+            --platform linux/amd64 \
             --build-arg NO_CLOUDFLARE="1" \
-            --build-arg NODE_BUILD_MAX_MEMORY="2048" \
             -f "apps/start/Dockerfile" \
             -t "$IMAGE_TAG" \
             .
