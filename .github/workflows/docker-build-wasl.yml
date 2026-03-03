@@ -40,7 +40,7 @@ jobs:
     if: ${{ github.event.inputs.app == 'all' || github.event.inputs.app == 'api' }}
     permissions:
       packages: write
-    runs-on: [ arc-amd64 ]
+    runs-on: [ arc-amd64-op ]
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +71,7 @@ jobs:
     if: ${{ github.event.inputs.app == 'all' || github.event.inputs.app == 'worker' }}
     permissions:
       packages: write
-    runs-on: [ arc-amd64 ]
+    runs-on: [ arc-amd64-op ]
     steps:
       - uses: actions/checkout@v4
 
@@ -102,7 +102,7 @@ jobs:
     if: ${{ github.event.inputs.app == 'all' || github.event.inputs.app == 'dashboard' }}
     permissions:
       packages: write
-    runs-on: [ arc-amd64 ]
+    runs-on: [ arc-amd64-op ]
     steps:
       - uses: actions/checkout@v4
 
