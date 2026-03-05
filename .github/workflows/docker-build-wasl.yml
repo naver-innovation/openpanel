@@ -21,7 +21,7 @@ env:
 
 jobs:
   generate-tag:
-    runs-on: [ arc-amd64 ]
+    runs-on: [ ubuntu-latest ]
     outputs:
       image_tag: ${{ steps.tag.outputs.image_tag }}
     steps:
@@ -40,12 +40,12 @@ jobs:
     if: ${{ github.event.inputs.app == 'all' || github.event.inputs.app == 'api' }}
     permissions:
       packages: write
-    runs-on: [ arc-amd64 ]
+    runs-on: [ ubuntu-latest ]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Clean up Docker to free disk space
+        run: docker system prune -af --volumes || true
 
       - name: Log in to OCIR
         uses: docker/login-action@v3
@@ -55,78 +55,75 @@ jobs:
           password: ${{ env.password }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        env:
+          IMAGE_TAG: ${{ env.registry }}/wasl-op/op-api:${{ needs.generate-tag.outputs.image_tag }}
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --build-arg DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
+            -f "apps/api/Dockerfile" \
+            -t "$IMAGE_TAG" \
+            .
+          docker push "$IMAGE_TAG"
+
+  build-worker:
+    needs: generate-tag
+    if: ${{ github.event.inputs.app == 'all' || github.event.inputs.app == 'worker' }}
+    permissions:
+      packages: write
+    runs-on: [ ubuntu-latest ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clean up Docker to free disk space
+        run: docker system prune -af --volumes || true
+
+      - name: Log in to OCIR
+        uses: docker/login-action@v3
         with:
-          context: .
-          file: apps/api/Dockerfile
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            ${{ env.registry }}/wasl-op/op-api:${{ needs.generate-tag.outputs.image_tag }}
-          build-args: |
-            DATABASE_URL=postgresql://dummy:dummy@localhost:5432/dummy
+          registry: ${{ env.registry }}
+          username: ${{ env.username }}
+          password: ${{ env.password }}
 
-  # build-worker:
-  #   needs: generate-tag
-  #   if: ${{ github.event.inputs.app == 'all' || github.event.inputs.app == 'worker' }}
-  #   permissions:
-  #     packages: write
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
+      - name: Build and push
+        env:
+          IMAGE_TAG: ${{ env.registry }}/wasl-op/op-worker:${{ needs.generate-tag.outputs.image_tag }}
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --build-arg DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
+            -f "apps/worker/Dockerfile" \
+            -t "$IMAGE_TAG" \
+            .
+          docker push "$IMAGE_TAG"
 
-  #     - name: Set up Docker Buildx
-  #       uses: docker/setup-buildx-action@v3
+  build-dashboard:
+    needs: generate-tag
+    if: ${{ github.event.inputs.app == 'all' || github.event.inputs.app == 'dashboard' }}
+    permissions:
+      packages: write
+    runs-on: [ ubuntu-latest ]
+    steps:
+      - uses: actions/checkout@v4
 
-  #     - name: Log in to OCIR
-  #       uses: docker/login-action@v3
-  #       with:
-  #         registry: ${{ env.registry }}
-  #         username: ${{ env.username }}
-  #         password: ${{ env.password }}
+      - name: Clean up Docker to free disk space
+        run: docker system prune -af --volumes || true
 
-  #     - name: Build and push
-  #       uses: docker/build-push-action@v6
-  #       with:
-  #         context: .
-  #         file: apps/worker/Dockerfile
-  #         push: true
-  #         cache-from: type=gha
-  #         cache-to: type=gha,mode=max
-  #         tags: |
-  #           ${{ env.registry }}/wasl-op/op-worker:${{ needs.generate-tag.outputs.image_tag }}
-  #         build-args: |
-  #           DATABASE_URL=postgresql://dummy:dummy@localhost:5432/dummy
+      - name: Log in to OCIR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.registry }}
+          username: ${{ env.username }}
+          password: ${{ env.password }}
 
-  # build-dashboard:
-  #   needs: generate-tag
-  #   if: ${{ github.event.inputs.app == 'all' || github.event.inputs.app == 'dashboard' }}
-  #   permissions:
-  #     packages: write
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-
-  #     - name: Set up Docker Buildx
-  #       uses: docker/setup-buildx-action@v3
-
-  #     - name: Log in to OCIR
-  #       uses: docker/login-action@v3
-  #       with:
-  #         registry: ${{ env.registry }}
-  #         username: ${{ env.username }}
-  #         password: ${{ env.password }}
-
-  #     - name: Build and push
-  #       uses: docker/build-push-action@v6
-  #       with:
-  #         context: .
-  #         file: apps/start/Dockerfile
-  #         push: true
-  #         cache-from: type=gha
-  #         cache-to: type=gha,mode=max
-  #         tags: |
-  #           ${{ env.registry }}/wasl-op/op-dashboard:${{ needs.generate-tag.outputs.image_tag }}
-  #         build-args: |
-  #           NO_CLOUDFLARE=1
+      - name: Build and push
+        env:
+          IMAGE_TAG: ${{ env.registry }}/wasl-op/op-dashboard:${{ needs.generate-tag.outputs.image_tag }}
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --build-arg NO_CLOUDFLARE="1" \
+            -f "apps/start/Dockerfile" \
+            -t "$IMAGE_TAG" \
+            .
+          docker push "$IMAGE_TAG"
