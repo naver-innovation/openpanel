@@ -10,14 +10,12 @@ import {
   convertClickhouseDateToJs,
   db,
   eventService,
-  formatClickhouseDate,
   getChartStartEndDate,
   getConversionEventNames,
   getEventList,
   getEventMetasCached,
-  getEvents,
   getSettingsForProject,
-  overviewService,
+  pagesService,
   sessionService,
 } from '@openpanel/db';
 import {
@@ -107,7 +105,9 @@ export const eventRouter = createTRPCRouter({
 
       let session: IServiceSession | undefined;
       if (res?.sessionId) {
-        session = await sessionService.byId(res?.sessionId, projectId);
+        session = await sessionService
+          .byId(res?.sessionId, projectId)
+          .catch(() => undefined);
       }
 
       return {
@@ -141,6 +141,7 @@ export const eventRouter = createTRPCRouter({
           path: columnVisibility?.name ?? true,
           duration: columnVisibility?.name ?? true,
           projectId: false,
+          revenue: true,
         },
       });
 
@@ -219,6 +220,7 @@ export const eventRouter = createTRPCRouter({
           path: columnVisibility?.name ?? true,
           duration: columnVisibility?.name ?? true,
           projectId: false,
+          revenue: true,
         },
         custom: (sb) => {
           sb.where.name = `name IN (${filteredConversions.map((event) => sqlstring.escape(event.name)).join(',')})`;
@@ -322,28 +324,17 @@ export const eventRouter = createTRPCRouter({
         search: z.string().optional(),
         range: zRange,
         interval: zTimeInterval,
-        filters: z.array(zChartEventFilter).default([]),
       }),
     )
     .query(async ({ input }) => {
       const { timezone } = await getSettingsForProject(input.projectId);
       const { startDate, endDate } = getChartStartEndDate(input, timezone);
-      if (input.search) {
-        input.filters.push({
-          id: 'path',
-          name: 'path',
-          value: [input.search],
-          operator: 'contains',
-        });
-      }
-      return overviewService.getTopPages({
+      return pagesService.getTopPages({
         projectId: input.projectId,
-        filters: input.filters,
         startDate,
         endDate,
-        cursor: input.cursor || 1,
-        limit: input.take,
         timezone,
+        search: input.search,
       });
     }),
 

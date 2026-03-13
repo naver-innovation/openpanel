@@ -1,8 +1,10 @@
+import { LazyComponent } from '@/components/lazy-component';
 import {
   OverviewFilterButton,
   OverviewFiltersButtons,
 } from '@/components/overview/filters/overview-filters-buttons';
 import { LiveCounter } from '@/components/overview/live-counter';
+import OverviewInsights from '@/components/overview/overview-insights';
 import { OverviewInterval } from '@/components/overview/overview-interval';
 import OverviewMetrics from '@/components/overview/overview-metrics';
 import { OverviewRange } from '@/components/overview/overview-range';
@@ -12,6 +14,7 @@ import OverviewTopEvents from '@/components/overview/overview-top-events';
 import OverviewTopGeo from '@/components/overview/overview-top-geo';
 import OverviewTopPages from '@/components/overview/overview-top-pages';
 import OverviewTopSources from '@/components/overview/overview-top-sources';
+import OverviewUserJourney from '@/components/overview/overview-user-journey';
 import { PAGE_TITLES, createProjectTitle } from '@/utils/title';
 import { createFileRoute } from '@tanstack/react-router';
 
@@ -32,27 +35,33 @@ function ProjectDashboard() {
   const { projectId } = Route.useParams();
   return (
     <div>
-      <div className="col gap-2 p-4">
-        <div className="flex justify-between gap-2">
-          <div className="flex gap-2">
-            <OverviewRange />
-            <OverviewInterval />
-            <OverviewFilterButton mode="events" />
+      <div className="sticky-header -top-px!">
+        <div className="col gap-2 p-4">
+          <div className="flex justify-between gap-2">
+            <div className="flex gap-2">
+              <OverviewRange />
+              <OverviewInterval />
+              <OverviewFilterButton mode="events" />
+            </div>
+            <div className="flex gap-2">
+              <LiveCounter projectId={projectId} />
+              <OverviewShare projectId={projectId} />
+            </div>
           </div>
-          <div className="flex gap-2">
-            <LiveCounter projectId={projectId} />
-            <OverviewShare projectId={projectId} />
-          </div>
+          <OverviewFiltersButtons />
         </div>
-        <OverviewFiltersButtons />
       </div>
       <div className="grid grid-cols-6 gap-4 p-4 pt-0">
         <OverviewMetrics projectId={projectId} />
+        <OverviewInsights projectId={projectId} />
         <OverviewTopSources projectId={projectId} />
         <OverviewTopPages projectId={projectId} />
         <OverviewTopDevices projectId={projectId} />
         <OverviewTopEvents projectId={projectId} />
         <OverviewTopGeo projectId={projectId} />
+        <LazyComponent className="col-span-6">
+          <OverviewUserJourney projectId={projectId} />
+        </LazyComponent>
       </div>
     </div>
   );

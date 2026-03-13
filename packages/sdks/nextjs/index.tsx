@@ -68,9 +68,17 @@ export function OpenPanelComponent({
       value: globalProperties,
     });
   }
+
+  const appendVersion = (url: string) => {
+    if (url.endsWith('.js')) {
+      return `${url}?v=${process.env.NEXTJS_VERSION!}`;
+    }
+    return url;
+  };
+
   return (
     <>
-      <Script src={cdnUrl ?? CDN_URL} async defer />
+      <Script src={appendVersion(cdnUrl || CDN_URL)} async defer />
       <Script
         strategy="beforeInteractive"
         dangerouslySetInnerHTML={{
@@ -121,6 +129,11 @@ export function useOpenPanel() {
     decrement,
     clear,
     setGlobalProperties,
+    revenue,
+    flushRevenue,
+    clearRevenue,
+    pendingRevenue,
+    fetchDeviceId,
   };
 }
 
@@ -151,6 +164,22 @@ function increment(payload: IncrementPayload) {
 
 function decrement(payload: DecrementPayload) {
   window.op('decrement', payload);
+}
+
+function fetchDeviceId() {
+  return window.op.fetchDeviceId();
+}
+function clearRevenue() {
+  window.op.clearRevenue();
+}
+function pendingRevenue(amount: number, properties?: Record<string, unknown>) {
+  window.op.pendingRevenue(amount, properties);
+}
+function revenue(amount: number, properties?: Record<string, unknown>) {
+  return window.op.revenue(amount, properties);
+}
+function flushRevenue() {
+  return window.op.flushRevenue();
 }
 
 function clear() {

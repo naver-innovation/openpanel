@@ -1,62 +1,25 @@
+import type {
+  IAliasPayload as AliasPayload,
+  IDecrementPayload as DecrementPayload,
+  IIdentifyPayload as IdentifyPayload,
+  IIncrementPayload as IncrementPayload,
+  ITrackHandlerPayload as TrackHandlerPayload,
+  ITrackPayload as TrackPayload,
+} from '@openpanel/validation';
 import { Api } from './api';
 
-export type TrackHandlerPayload =
-  | {
-      type: 'track';
-      payload: TrackPayload;
-    }
-  | {
-      type: 'increment';
-      payload: IncrementPayload;
-    }
-  | {
-      type: 'decrement';
-      payload: DecrementPayload;
-    }
-  | {
-      type: 'alias';
-      payload: AliasPayload;
-    }
-  | {
-      type: 'identify';
-      payload: IdentifyPayload;
-    };
-
-export type TrackPayload = {
-  name: string;
-  properties?: Record<string, unknown>;
-  profileId?: string;
+export type {
+  AliasPayload,
+  DecrementPayload,
+  IdentifyPayload,
+  IncrementPayload,
+  TrackHandlerPayload,
+  TrackPayload,
 };
 
 export type TrackProperties = {
   [key: string]: unknown;
   profileId?: string;
-};
-
-export type IdentifyPayload = {
-  profileId: string;
-  firstName?: string;
-  lastName?: string;
-  email?: string;
-  avatar?: string;
-  properties?: Record<string, unknown>;
-};
-
-export type AliasPayload = {
-  profileId: string;
-  alias: string;
-};
-
-export type IncrementPayload = {
-  profileId: string;
-  property: string;
-  value?: number;
-};
-
-export type DecrementPayload = {
-  profileId: string;
-  property: string;
-  value?: number;
 };
 
 export type OpenPanelOptions = {
@@ -68,6 +31,7 @@ export type OpenPanelOptions = {
   waitForProfile?: boolean;
   filter?: (payload: TrackHandlerPayload) => boolean;
   disabled?: boolean;
+  debug?: boolean;
 };
 
 export class OpenPanel {
@@ -129,6 +93,7 @@ export class OpenPanel {
   }
 
   async track(name: string, properties?: TrackProperties) {
+    this.log('track event', name, properties);
     return this.send({
       type: 'track',
       payload: {
@@ -143,6 +108,7 @@ export class OpenPanel {
   }
 
   async identify(payload: IdentifyPayload) {
+    this.log('identify user', payload);
     if (payload.profileId) {
       this.profileId = payload.profileId;
       this.flush();
@@ -162,12 +128,10 @@ export class OpenPanel {
     }
   }
 
-  async alias(payload: AliasPayload) {
-    return this.send({
-      type: 'alias',
-      payload,
-    });
-  }
+  /**
+   * @deprecated This method is deprecated and will be removed in a future version.
+   */
+  async alias(payload: AliasPayload) {}
 
   async increment(payload: IncrementPayload) {
     return this.send({
@@ -223,5 +187,11 @@ export class OpenPanel {
       });
     });
     this.queue = [];
+  }
+
+  log(...args: any[]) {
+    if (this.options.debug) {
+      console.log('[OpenPanel.dev]', ...args);
+    }
   }
 }

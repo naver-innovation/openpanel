@@ -17,10 +17,10 @@ export function ReportChartEmpty({
 }) {
   const {
     isEditMode,
-    report: { events },
+    report: { series },
   } = useReportChartContext();
 
-  if (events.length === 0) {
+  if (!series || series.length === 0) {
     return (
       <div className="card p-4 center-center h-full w-full flex-col relative">
         <div className="row gap-2 items-end absolute top-4 left-4">
@@ -32,7 +32,7 @@ export function ReportChartEmpty({
         </div>
         <ForkliftIcon
           strokeWidth={1.2}
-          className="mb-4 size-1/3 animate-pulse text-muted-foreground"
+          className="mb-4 size-1/3 max-w-40 animate-pulse text-muted-foreground"
         />
         <div className="font-medium text-muted-foreground">
           Ready when you're
