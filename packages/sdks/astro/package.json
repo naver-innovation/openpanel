@@ -1,9 +1,10 @@
 {
   "name": "@openpanel/astro",
-  "version": "1.0.3-local",
+  "version": "1.0.7-local",
   "config": {
     "transformPackageJson": false,
-    "transformEnvs": true
+    "transformEnvs": true,
+    "docPath": "apps/public/content/docs/(tracking)/sdks/astro.mdx"
   },
   "exports": {
     ".": "./index.ts"
@@ -14,7 +15,7 @@
   "files": ["src", "index.ts"],
   "keywords": ["astro-component"],
   "dependencies": {
-    "@openpanel/web": "workspace:1.0.3-local"
+    "@openpanel/web": "workspace:1.0.7-local"
   },
   "devDependencies": {
     "astro": "^5.7.7"

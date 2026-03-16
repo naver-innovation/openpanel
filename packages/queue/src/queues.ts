@@ -8,8 +8,8 @@ import type {
 } from '@openpanel/db';
 import { createLogger } from '@openpanel/logger';
 import { getRedisGroupQueue, getRedisQueue } from '@openpanel/redis';
-import type { TrackPayload } from '@openpanel/sdk';
 import { Queue as GroupQueue } from 'groupmq';
+import type { ITrackPayload } from '../../validation';
 
 export const EVENTS_GROUP_QUEUES_SHARDS = Number.parseInt(
   process.env.EVENTS_GROUP_QUEUES_SHARDS || '1',
@@ -32,7 +32,7 @@ export interface EventsQueuePayloadIncomingEvent {
   type: 'incomingEvent';
   payload: {
     projectId: string;
-    event: TrackPayload & {
+    event: ITrackPayload & {
       timestamp: string | number;
       isTimestampFromThePast: boolean;
     };
@@ -111,13 +111,18 @@ export type CronQueuePayloadProject = {
   type: 'deleteProjects';
   payload: undefined;
 };
+export type CronQueuePayloadInsightsDaily = {
+  type: 'insightsDaily';
+  payload: undefined;
+};
 export type CronQueuePayload =
   | CronQueuePayloadSalt
   | CronQueuePayloadFlushEvents
   | CronQueuePayloadFlushSessions
   | CronQueuePayloadFlushProfiles
   | CronQueuePayloadPing
-  | CronQueuePayloadProject;
+  | CronQueuePayloadProject
+  | CronQueuePayloadInsightsDaily;
 
 export type MiscQueuePayloadTrialEndingSoon = {
   type: 'trialEndingSoon';
@@ -146,7 +151,7 @@ export const eventsGroupQueues = Array.from({
 }).map(
   (_, index, list) =>
     new GroupQueue<EventsQueuePayloadIncomingEvent['payload']>({
-      logger: queueLogger,
+      logger: process.env.NODE_ENV === 'production' ? queueLogger : undefined,
       namespace: getQueueName(
         list.length === 1 ? 'group_events' : `group_events_${index}`,
       ),
@@ -231,6 +236,21 @@ export const importQueue = new Queue<ImportQueuePayload>(
     defaultJobOptions: {
       removeOnComplete: 10,
       removeOnFail: 50,
+    },
+  },
+);
+
+export type InsightsQueuePayloadProject = {
+  type: 'insightsProject';
+  payload: { projectId: string; date: string };
+};
+
+export const insightsQueue = new Queue<InsightsQueuePayloadProject>(
+  getQueueName('insights'),
+  {
+    connection: getRedisQueue(),
+    defaultJobOptions: {
+      removeOnComplete: 100,
     },
   },
 );

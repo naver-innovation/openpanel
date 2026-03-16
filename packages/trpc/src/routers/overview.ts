@@ -10,7 +10,9 @@ import {
   overviewService,
   zGetMetricsInput,
   zGetTopGenericInput,
+  zGetTopGenericSeriesInput,
   zGetTopPagesInput,
+  zGetUserJourneyInput,
 } from '@openpanel/db';
 import { type IChartRange, zRange } from '@openpanel/validation';
 import { format } from 'date-fns';
@@ -300,6 +302,53 @@ export const overviewRouter = createTRPCRouter({
         false,
         timezone,
       )(overviewService.getTopGeneric.bind(overviewService));
+
+      return current;
+    }),
+
+  topGenericSeries: publicProcedure
+    .input(
+      zGetTopGenericSeriesInput.omit({ startDate: true, endDate: true }).extend({
+        startDate: z.string().nullish(),
+        endDate: z.string().nullish(),
+        range: zRange,
+      }),
+    )
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone,
+      )(overviewService.getTopGenericSeries.bind(overviewService));
+
+      return current;
+    }),
+
+  userJourney: publicProcedure
+    .input(
+      zGetUserJourneyInput.omit({ startDate: true, endDate: true }).extend({
+        startDate: z.string().nullish(),
+        endDate: z.string().nullish(),
+        range: zRange,
+        steps: z.number().min(2).max(10).default(5).optional(),
+      }),
+    )
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone,
+      )(async (input) => {
+        return overviewService.getUserJourney({
+          ...input,
+          steps: input.steps ?? 5,
+          timezone,
+        });
+      });
 
       return current;
     }),

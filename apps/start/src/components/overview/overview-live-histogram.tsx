@@ -1,5 +1,4 @@
 import { useTRPC } from '@/integrations/trpc/react';
-import { cn } from '@/utils/cn';
 import { useQuery } from '@tanstack/react-query';
 
 import { useNumber } from '@/hooks/use-numer-formatter';
@@ -8,18 +7,14 @@ import * as Portal from '@radix-ui/react-portal';
 import { bind } from 'bind-event-listener';
 import throttle from 'lodash.throttle';
 import React, { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
 import {
   Bar,
   BarChart,
-  CartesianGrid,
-  Customized,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
-import { BarShapeBlue } from '../charts/common-bar';
 import { SerieIcon } from '../report-chart/common/serie-icon';
 interface OverviewLiveHistogramProps {
   projectId: string;
@@ -57,7 +52,7 @@ export function OverviewLiveHistogram({
     <Wrapper
       count={totalSessions}
       icons={
-        <div className="row gap-2">
+        <div className="row gap-2 shrink-0">
           {liveData.referrers.slice(0, 3).map((ref, index) => (
             <div
               key={`${ref.referrer}-${ref.count}-${index}`}
@@ -86,10 +81,8 @@ export function OverviewLiveHistogram({
             <YAxis hide domain={[0, maxDomain]} />
             <Bar
               dataKey="sessionCount"
-              fill="rgba(59, 121, 255, 0.2)"
+              className="fill-chart-0"
               isAnimationActive={false}
-              shape={BarShapeBlue}
-              activeBar={BarShapeBlue}
             />
           </BarChart>
         </ResponsiveContainer>
@@ -107,11 +100,11 @@ interface WrapperProps {
 function Wrapper({ children, count, icons }: WrapperProps) {
   return (
     <div className="flex h-full flex-col">
-      <div className="row gap-2 justify-between">
-        <div className="relative mb-1 text-xs font-medium text-muted-foreground">
+      <div className="row gap-2 justify-between items-center">
+        <div className="relative text-xs font-medium text-muted-foreground">
           {count} sessions last 30 min
         </div>
-        <div>{icons}</div>
+        {icons}
       </div>
       <div className="relative flex h-full w-full flex-1 items-end justify-center gap-2">
         {children}
