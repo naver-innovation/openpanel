@@ -56,7 +56,7 @@ jobs:
 
       - name: Build and push
         env:
-          IMAGE_TAG: ${{ env.registry }}/wasl-op/op-api:${{ needs.generate-tag.outputs.image_tag }}
+          IMAGE_TAG: ${{ env.registry }}/wasl-openpanel-api:${{ needs.generate-tag.outputs.image_tag }}
         run: |
           docker build \
             --platform linux/amd64 \
@@ -87,7 +87,7 @@ jobs:
 
       - name: Build and push
         env:
-          IMAGE_TAG: ${{ env.registry }}/wasl-op/op-worker:${{ needs.generate-tag.outputs.image_tag }}
+          IMAGE_TAG: ${{ env.registry }}/wasl-openpanel-worker:${{ needs.generate-tag.outputs.image_tag }}
         run: |
           docker build \
             --platform linux/amd64 \
@@ -118,7 +118,7 @@ jobs:
 
       - name: Build and push
         env:
-          IMAGE_TAG: ${{ env.registry }}/wasl-op/op-dashboard:${{ needs.generate-tag.outputs.image_tag }}
+          IMAGE_TAG: ${{ env.registry }}/wasl-openpanel-dashboard:${{ needs.generate-tag.outputs.image_tag }}
         run: |
           docker build \
             --platform linux/amd64 \
