@@ -8,6 +8,9 @@ export type ILogger = winston.Logger;
 const logLevel = process.env.LOG_LEVEL ?? 'info';
 const silent = process.env.LOG_SILENT === 'true';
 
+/** Fecha pattern (winston/logform); e.g. 2026-05-08 09:26:00.751+03:00 */
+const LOG_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH:mm:ss.SSSZ' as const;
+
 // Add colors for custom levels (fatal, warn, trace) that aren't in default color schemes
 winston.addColors({
   fatal: 'red',
@@ -94,15 +97,17 @@ export function createLogger({ name }: { name: string }): ILogger {
     format = winston.format.combine(
       errorFormatter(),
       redactSensitiveInfo(),
+      winston.format.timestamp({ format: LOG_TIMESTAMP_FORMAT }),
       winston.format.colorize({
         all: true,
       }),
       winston.format.printf((info) => {
-        const { level, message, service, ...meta } = info;
+        const { level, message, service, timestamp, ...meta } = info;
         const metaStr =
           Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : '';
-        return `${level} ${message}${metaStr}`;
+        return `${timestamp} ${level} ${message}${metaStr}`;
       }),
+      winston.format.json(),
     );
   }
 
