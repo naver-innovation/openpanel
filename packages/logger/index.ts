@@ -1,4 +1,5 @@
 import * as HyperDX from '@hyperdx/node-opentelemetry';
+import fecha from 'fecha';
 import winston from 'winston';
 
 export { winston };
@@ -97,7 +98,7 @@ export function createLogger({ name }: { name: string }): ILogger {
     format = winston.format.combine(
       errorFormatter(),
       redactSensitiveInfo(),
-      winston.format.timestamp({ format: LOG_TIMESTAMP_FORMAT }),
+      winston.format.timestamp({ format: () => fecha.format(new Date(), LOG_TIMESTAMP_FORMAT) }),
       winston.format.colorize({
         all: true,
       }),
