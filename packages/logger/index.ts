@@ -1,5 +1,5 @@
 import * as HyperDX from '@hyperdx/node-opentelemetry';
-import fecha from 'fecha';
+import { DateTime } from 'luxon';
 import winston from 'winston';
 
 export { winston };
@@ -9,8 +9,12 @@ export type ILogger = winston.Logger;
 const logLevel = process.env.LOG_LEVEL ?? 'info';
 const silent = process.env.LOG_SILENT === 'true';
 
-/** Fecha pattern (winston/logform); e.g. 2026-05-08 09:26:00.751+03:00 */
-const LOG_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH:mm:ss.SSSZ' as const;
+/**
+ * Log timezone: honour LOG_TZ env var, fall back to UTC.
+ * Set LOG_TZ=Asia/Riyadh in the container to get +03:00 timestamps.
+ * Uses luxon so it is unaffected by process.env.TZ = "UTC" set by the app.
+ */
+const LOG_TZ = process.env.LOG_TZ ?? process.env.TZ ?? 'UTC';
 
 // Add colors for custom levels (fatal, warn, trace) that aren't in default color schemes
 winston.addColors({
@@ -98,7 +102,7 @@ export function createLogger({ name }: { name: string }): ILogger {
     format = winston.format.combine(
       errorFormatter(),
       redactSensitiveInfo(),
-      winston.format.timestamp({ format: () => fecha.format(new Date(), LOG_TIMESTAMP_FORMAT) }),
+      winston.format.timestamp({ format: () => DateTime.now().setZone(LOG_TZ).toFormat('yyyy-MM-dd HH:mm:ss.SSSZZ') }),
       winston.format.colorize({
         all: true,
       }),
