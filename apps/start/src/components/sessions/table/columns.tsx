@@ -1,12 +1,12 @@
-import { ProjectLink } from '@/components/links';
-import { SerieIcon } from '@/components/report-chart/common/serie-icon';
-import { formatDateTime, formatTimeAgoOrDateTime } from '@/utils/date';
-import type { ColumnDef } from '@tanstack/react-table';
-
-import { ColumnCreatedAt } from '@/components/column-created-at';
-import { getProfileName } from '@/utils/getters';
 import { round } from '@openpanel/common';
 import type { IServiceSession } from '@openpanel/db';
+import type { ColumnDef } from '@tanstack/react-table';
+import { Video } from 'lucide-react';
+import { ColumnCreatedAt } from '@/components/column-created-at';
+import { ProjectLink } from '@/components/links';
+import { ProfileAvatar } from '@/components/profiles/profile-avatar';
+import { SerieIcon } from '@/components/report-chart/common/serie-icon';
+import { getProfileName } from '@/utils/getters';
 
 function formatDuration(milliseconds: number): string {
   const seconds = milliseconds / 1000;
@@ -43,13 +43,25 @@ export function useColumns() {
       cell: ({ row }) => {
         const session = row.original;
         return (
-          <ProjectLink
-            href={`/sessions/${session.id}`}
-            className="font-medium"
-            title={session.id}
-          >
-            {session.id.slice(0, 8)}...
-          </ProjectLink>
+          <div className="row items-center gap-2">
+            <ProjectLink
+              className="font-medium"
+              href={`/sessions/${session.id}`}
+              title={session.id}
+            >
+              {session.id.slice(0, 8)}...
+            </ProjectLink>
+            {session.hasReplay && (
+              <ProjectLink
+                aria-label="View replay"
+                className="text-muted-foreground hover:text-foreground"
+                href={`/sessions/${session.id}#replay`}
+                title="View replay"
+              >
+                <Video className="size-4" />
+              </ProjectLink>
+            )}
+          </div>
         );
       },
     },
@@ -62,17 +74,18 @@ export function useColumns() {
         if (session.profile) {
           return (
             <ProjectLink
-              href={`/profiles/${session.profile.id}`}
-              className="font-medium"
+              className="row items-center gap-2 font-medium hover:underline"
+              href={`/profiles/${encodeURIComponent(session.profile.id)}`}
             >
+              <ProfileAvatar size="sm" {...session.profile} />
               {getProfileName(session.profile)}
             </ProjectLink>
           );
         }
         return (
           <ProjectLink
-            href={`/profiles/${session.profileId}`}
-            className="font-mono font-medium"
+            className="font-medium font-mono"
+            href={`/profiles/${encodeURIComponent(session.profileId)}`}
           >
             {session.profileId}
           </ProjectLink>
@@ -256,6 +269,27 @@ export function useColumns() {
       accessorKey: 'deviceId',
       header: 'Device ID',
       size: 120,
+    },
+    {
+      accessorKey: 'groups',
+      header: 'Groups',
+      size: 200,
+      cell: ({ row }) => {
+        const { groups } = row.original;
+        if (!groups?.length) return null;
+        return (
+          <div className="flex flex-wrap gap-1">
+            {groups.map((g) => (
+              <span
+                key={g}
+                className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono"
+              >
+                {g}
+              </span>
+            ))}
+          </div>
+        );
+      },
     },
   ];
 

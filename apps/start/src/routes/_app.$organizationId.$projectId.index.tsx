@@ -1,8 +1,11 @@
+import { createFileRoute } from '@tanstack/react-router';
 import { LazyComponent } from '@/components/lazy-component';
+import { useRangePageContext } from '@/hooks/use-page-context-helpers';
 import {
   OverviewFilterButton,
   OverviewFiltersButtons,
 } from '@/components/overview/filters/overview-filters-buttons';
+import { OverviewAICommand } from '@/components/overview/overview-ai-command';
 import { LiveCounter } from '@/components/overview/live-counter';
 import OverviewInsights from '@/components/overview/overview-insights';
 import { OverviewInterval } from '@/components/overview/overview-interval';
@@ -15,8 +18,8 @@ import OverviewTopGeo from '@/components/overview/overview-top-geo';
 import OverviewTopPages from '@/components/overview/overview-top-pages';
 import OverviewTopSources from '@/components/overview/overview-top-sources';
 import OverviewUserJourney from '@/components/overview/overview-user-journey';
-import { PAGE_TITLES, createProjectTitle } from '@/utils/title';
-import { createFileRoute } from '@tanstack/react-router';
+import OverviewWeeklyTrends from '@/components/overview/overview-weekly-trends';
+import { createProjectTitle, PAGE_TITLES } from '@/utils/title';
 
 export const Route = createFileRoute('/_app/$organizationId/$projectId/')({
   component: ProjectDashboard,
@@ -33,6 +36,7 @@ export const Route = createFileRoute('/_app/$organizationId/$projectId/')({
 
 function ProjectDashboard() {
   const { projectId } = Route.useParams();
+  useRangePageContext('overview');
   return (
     <div>
       <div className="sticky-header -top-px!">
@@ -42,6 +46,7 @@ function ProjectDashboard() {
               <OverviewRange />
               <OverviewInterval />
               <OverviewFilterButton mode="events" />
+              <OverviewAICommand className="hidden w-[280px] md:block" />
             </div>
             <div className="flex gap-2">
               <LiveCounter projectId={projectId} />
@@ -59,6 +64,9 @@ function ProjectDashboard() {
         <OverviewTopDevices projectId={projectId} />
         <OverviewTopEvents projectId={projectId} />
         <OverviewTopGeo projectId={projectId} />
+        <LazyComponent className="col-span-6">
+          <OverviewWeeklyTrends projectId={projectId} />
+        </LazyComponent>
         <LazyComponent className="col-span-6">
           <OverviewUserJourney projectId={projectId} />
         </LazyComponent>

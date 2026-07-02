@@ -1,16 +1,16 @@
-import FullPageLoadingState from '@/components/full-page-loading-state';
-import { PageHeader } from '@/components/page-header';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { PAGE_TITLES, createProjectTitle } from '@/utils/title';
 import {
-  Outlet,
   createFileRoute,
+  Outlet,
   useLocation,
   useRouter,
 } from '@tanstack/react-router';
+import FullPageLoadingState from '@/components/full-page-loading-state';
+import { PageHeader } from '@/components/page-header';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { createProjectTitle, PAGE_TITLES } from '@/utils/title';
 
 export const Route = createFileRoute(
-  '/_app/$organizationId/$projectId/settings/_tabs',
+  '/_app/$organizationId/$projectId/settings/_tabs'
 )({
   component: ProjectDashboard,
   head: () => {
@@ -27,7 +27,7 @@ export const Route = createFileRoute(
     await queryClient.prefetchQuery(
       trpc.project.getProjectWithClients.queryOptions({
         projectId: params.projectId,
-      }),
+      })
     );
   },
   pendingComponent: FullPageLoadingState,
@@ -41,8 +41,12 @@ function ProjectDashboard() {
   const settingsTabs = [
     { id: 'details', label: 'Details' },
     { id: 'events', label: 'Events' },
-    { id: 'clients', label: 'Clients' },
+    { id: 'clients', label: 'Clients / API keys' },
+    { id: 'tracking', label: 'Tracking script' },
+    { id: 'mcp', label: 'MCP' },
+    { id: 'widgets', label: 'Widgets' },
     { id: 'imports', label: 'Imports' },
+    { id: 'gsc', label: 'Google Search' },
   ];
 
   const handleTabChange = (tabId: string) => {
@@ -55,11 +59,11 @@ function ProjectDashboard() {
   return (
     <div className="container p-8">
       <PageHeader
-        title="Project settings"
         description="Manage your project settings here"
+        title="Project settings"
       />
 
-      <Tabs value={tab} onValueChange={handleTabChange} className="mt-2 mb-8">
+      <Tabs className="mt-2 mb-8" onValueChange={handleTabChange} value={tab}>
         <TabsList>
           {settingsTabs.map((tab) => (
             <TabsTrigger key={tab.id} value={tab.id}>

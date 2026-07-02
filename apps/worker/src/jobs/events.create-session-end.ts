@@ -1,27 +1,27 @@
-import type { Job } from 'bullmq';
-
-import { logger as baseLogger } from '@/utils/logger';
 import {
-  type IClickhouseSession,
-  type IServiceCreateEventPayload,
-  type IServiceEvent,
-  TABLE_NAMES,
   checkNotificationRulesForSessionEnd,
   convertClickhouseDateToJs,
   createEvent,
-  eventBuffer,
   formatClickhouseDate,
   getEvents,
   getHasFunnelRules,
   getNotificationRulesByProjectId,
+  type IClickhouseSession,
+  type IServiceCreateEventPayload,
+  type IServiceEvent,
+  profileBackfillBuffer,
   sessionBuffer,
+  TABLE_NAMES,
+  transformEvent,
   transformSessionToEvent,
 } from '@openpanel/db';
 import type { EventsQueuePayloadCreateSessionEnd } from '@openpanel/queue';
+import type { Job } from 'bullmq';
+import { logger as baseLogger } from '@/utils/logger';
 
 const MAX_SESSION_EVENTS = 500;
 
-// Grabs session_start and screen_views + the last occured event
+// Grabs session_start and the last occured event
 async function getSessionEvents({
   projectId,
   sessionId,
@@ -34,11 +34,11 @@ async function getSessionEvents({
   endAt: Date;
 }): Promise<IServiceEvent[]> {
   const sql = `
-    SELECT * FROM ${TABLE_NAMES.events} 
-    WHERE 
-      session_id = '${sessionId}' 
+    SELECT * FROM ${TABLE_NAMES.events}
+    WHERE
+      session_id = '${sessionId}'
       AND project_id = '${projectId}'
-      AND created_at BETWEEN '${formatClickhouseDate(startAt)}' AND '${formatClickhouseDate(endAt)}'
+      AND created_at BETWEEN '${formatClickhouseDate(new Date(startAt.getTime() - 1000))}' AND '${formatClickhouseDate(new Date(endAt.getTime() + 1000))}'
     ORDER BY created_at DESC LIMIT ${MAX_SESSION_EVENTS};
   `;
 
@@ -57,12 +57,12 @@ async function getSessionEvents({
     .flatMap((event) => (event ? [event] : []))
     .sort(
       (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 }
 
 export async function createSessionEnd(
-  job: Job<EventsQueuePayloadCreateSessionEnd>,
+  job: Job<EventsQueuePayloadCreateSessionEnd>
 ) {
   const { payload } = job.data;
   const logger = baseLogger.child({
@@ -80,19 +80,30 @@ export async function createSessionEnd(
     throw new Error('Session not found');
   }
 
-  try {
-    await handleSessionEndNotifications({
-      session,
-      payload,
-    });
-  } catch (error) {
-    logger.error('Creating notificatios for session end failed', {
-      error,
-    });
+  const profileId = session.profile_id || payload.profileId;
+
+  if (
+    profileId !== session.device_id &&
+    process.env.EXPERIMENTAL_PROFILE_BACKFILL === '1'
+  ) {
+    const runOnProjects =
+      process.env.EXPERIMENTAL_PROFILE_BACKFILL_PROJECTS?.split(',').filter(
+        Boolean
+      ) ?? [];
+    if (
+      runOnProjects.length === 0 ||
+      runOnProjects.includes(payload.projectId)
+    ) {
+      await profileBackfillBuffer.add({
+        projectId: payload.projectId,
+        sessionId: payload.sessionId,
+        profileId,
+      });
+    }
   }
 
   // Create session end event
-  return createEvent({
+  const { document: sessionEndEvent } = await createEvent({
     ...payload,
     properties: {
       ...payload.properties,
@@ -102,21 +113,38 @@ export async function createSessionEnd(
     duration: session.duration ?? 0,
     path: session.exit_path ?? '',
     createdAt: new Date(
-      convertClickhouseDateToJs(session.ended_at).getTime() + 1000,
+      convertClickhouseDateToJs(session.ended_at).getTime() + 1000
     ),
-    profileId: session.profile_id || payload.profileId,
+    profileId,
   });
+
+  try {
+    await handleSessionEndNotifications({
+      session,
+      payload,
+      sessionEndEvent: transformEvent(sessionEndEvent),
+    });
+  } catch (error) {
+    logger.error(
+      { err: error },
+      'Creating notificatios for session end failed',
+    );
+  }
+
+  return sessionEndEvent;
 }
 
 async function handleSessionEndNotifications({
   session,
   payload,
+  sessionEndEvent,
 }: {
   session: IClickhouseSession;
   payload: IServiceCreateEventPayload;
+  sessionEndEvent: IServiceEvent;
 }) {
   const notificationRules = await getNotificationRulesByProjectId(
-    payload.projectId,
+    payload.projectId
   );
   const hasFunnelRules = getHasFunnelRules(notificationRules);
   const isEventCountReasonable =
@@ -126,12 +154,12 @@ async function handleSessionEndNotifications({
     const events = await getSessionEvents({
       projectId: payload.projectId,
       sessionId: payload.sessionId,
-      startAt: new Date(session.created_at),
-      endAt: new Date(session.ended_at),
+      startAt: convertClickhouseDateToJs(session.created_at),
+      endAt: convertClickhouseDateToJs(session.ended_at),
     });
 
     if (events.length > 0) {
-      await checkNotificationRulesForSessionEnd(events);
+      await checkNotificationRulesForSessionEnd([...events, sessionEndEvent]);
     }
   }
 }

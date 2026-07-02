@@ -9,7 +9,6 @@ import { countries } from '@/translations/countries';
 import { NOT_SET_VALUE } from '@openpanel/constants';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRightIcon } from 'lucide-react';
-import { ReportChart } from '../report-chart';
 import { SerieIcon } from '../report-chart/common/serie-icon';
 import { Widget, WidgetBody } from '../widget';
 import { OVERVIEW_COLUMNS_NAME } from './overview-constants';
@@ -18,6 +17,7 @@ import {
   OverviewLineChart,
   OverviewLineChartLoading,
 } from './overview-line-chart';
+import { OverviewMap } from './overview-map';
 import { OverviewViewToggle, useOverviewView } from './overview-view-toggle';
 import {
   WidgetFooter,
@@ -33,8 +33,12 @@ import { useOverviewWidgetV2 } from './useOverviewWidget';
 
 interface OverviewTopGeoProps {
   projectId: string;
+  shareId?: string;
 }
-export default function OverviewTopGeo({ projectId }: OverviewTopGeoProps) {
+export default function OverviewTopGeo({
+  projectId,
+  shareId,
+}: OverviewTopGeoProps) {
   const { interval, range, previous, startDate, endDate } =
     useOverviewOptions();
   const [chartType, setChartType] = useState<IChartType>('bar');
@@ -62,6 +66,7 @@ export default function OverviewTopGeo({ projectId }: OverviewTopGeoProps) {
   const query = useQuery(
     trpc.overview.topGeneric.queryOptions({
       projectId,
+      shareId,
       range,
       filters,
       column: widget.key,
@@ -74,6 +79,7 @@ export default function OverviewTopGeo({ projectId }: OverviewTopGeoProps) {
     trpc.overview.topGenericSeries.queryOptions(
       {
         projectId,
+        shareId,
         range,
         filters,
         column: widget.key,
@@ -88,7 +94,7 @@ export default function OverviewTopGeo({ projectId }: OverviewTopGeoProps) {
   );
 
   const filteredData = useMemo(() => {
-    const data = (query.data ?? []).slice(0, 15);
+    const data = query.data ?? [];
     if (!searchQuery.trim()) {
       return data;
     }
@@ -210,36 +216,7 @@ export default function OverviewTopGeo({ projectId }: OverviewTopGeoProps) {
           <div className="title">Map</div>
         </WidgetHead>
         <WidgetBody>
-          <ReportChart
-            options={{ hideID: true }}
-            report={{
-              projectId,
-              startDate,
-              endDate,
-              series: [
-                {
-                  type: 'event',
-                  segment: 'event',
-                  filters,
-                  id: 'A',
-                  name: isPageFilter ? 'screen_view' : 'session_start',
-                },
-              ],
-              breakdowns: [
-                {
-                  id: 'A',
-                  name: 'country',
-                },
-              ],
-              chartType: 'map',
-              lineType: 'monotone',
-              interval: interval,
-              name: 'Top sources',
-              range: range,
-              previous: previous,
-              metric: 'sum',
-            }}
-          />
+          <OverviewMap projectId={projectId} shareId={shareId} />
         </WidgetBody>
       </Widget>
     </>

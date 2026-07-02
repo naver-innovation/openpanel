@@ -1,9 +1,10 @@
 ---
 title: "How to migrate from Google Analytics to OpenPanel"
-description: "Switch from Google Analytics to OpenPanel in under an hour. Learn how to map GA4 events, set up parallel tracking, and gain privacy-first analytics."
+description: "Switch from Google Analytics to OpenPanel in under an hour. Learn how to map GA4 events, set up parallel tracking, and gain privacy-first, open-source analytics."
 difficulty: intermediate
 timeToComplete: 45
 date: 2025-12-15
+updated: 2026-02-25
 cover: /content/cover-default.jpg
 team: OpenPanel Team
 steps:
@@ -21,7 +22,7 @@ steps:
 
 # How to migrate from Google Analytics to OpenPanel
 
-Migrating from Google Analytics to OpenPanel takes about 45 minutes for most websites. You'll end up with privacy-first analytics that doesn't require cookie consent banners, a simpler interface than GA4, and full ownership of your data.
+Migrating from Google Analytics to OpenPanel takes about 45 minutes for most websites. You'll end up with privacy-first analytics that doesn't require cookie consent banners, a simpler interface than GA4, and full ownership of your data. See our full [Google Analytics vs OpenPanel comparison](/compare/google-analytics-alternative) for a detailed breakdown of the differences.
 
 OpenPanel uses a similar event-based tracking model to GA4, which makes the migration straightforward. The biggest difference is that OpenPanel is designed for privacy by default, using cookieless tracking that doesn't require consent under most privacy regulations.
 
@@ -58,7 +59,7 @@ For projects using a build system, you can also install the npm package with `np
 
 ## Map your GA4 events [#map-events]
 
-OpenPanel uses a `track()` API that closely mirrors GA4's event structure. Most of your existing event tracking can be migrated with minimal changes.
+OpenPanel uses a `track()` API that closely mirrors GA4's event structure. Most of your existing [event tracking](/features/event-tracking) can be migrated with minimal changes.
 
 ### Page views
 
@@ -95,7 +96,7 @@ The event name and properties carry over directly. OpenPanel doesn't have the re
 
 ### User identification
 
-GA4 uses `set user_properties` for user identification, while OpenPanel uses a dedicated `identify` method. This gives you richer user profiles and session history.
+GA4 uses `set user_properties` for [user identification](/features/identify-users), while OpenPanel uses a dedicated `identify` method. This gives you richer user profiles and session history.
 
 ```js
 window.op('identify', {
@@ -199,13 +200,13 @@ Since OpenPanel doesn't use cookies by default, you may be able to remove your c
 
 Moving from GA4 to OpenPanel means gaining some things and losing others. You'll get privacy-first tracking without cookies, full ownership of your data (especially if you [self-host](/articles/how-to-self-host-openpanel)), and a simpler interface for day-to-day analytics.
 
-On the other hand, you won't be able to import historical data from GA4 since Google doesn't provide an easy export mechanism. If you rely heavily on Google Ads conversion tracking, you'll need to either keep GA4 running for that specific use case or use Google Ads' standalone conversion tracking pixel.
+On the other hand, you won't be able to import historical data from GA4 since Google doesn't provide an easy export mechanism. If you rely heavily on Google Ads [conversion tracking](/features/conversion), you'll need to either keep GA4 running for that specific use case or use Google Ads' standalone conversion tracking pixel.
 
 GA4's attribution modeling is more sophisticated than OpenPanel's, so if you depend on multi-touch attribution for ad spend optimization, consider your requirements carefully before fully migrating.
 
 ## Next steps
 
-Once you're up and running with OpenPanel, explore the [funnel analysis](/articles/how-to-create-a-funnel) feature to track user journeys through your conversion paths. If you're interested in maximum data privacy and ownership, the self-hosting guide walks through running OpenPanel on your own infrastructure.
+Once you're up and running with OpenPanel, explore the [funnel analysis](/articles/how-to-create-a-funnel) feature to track user journeys through your conversion paths. If you're interested in maximum data privacy and ownership, the [self-hosting guide](/articles/how-to-self-host-openpanel) walks through running OpenPanel on your own infrastructure. For a complete feature comparison, see our [Google Analytics alternative](/compare/google-analytics-alternative) page.
 
 For framework-specific setup instructions, check out our guides:
 - [Next.js analytics guide](/guides/nextjs-analytics) for Next.js applications

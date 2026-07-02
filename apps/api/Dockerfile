@@ -29,6 +29,7 @@ COPY apps/api/package.json ./apps/api/
 # Packages
 COPY packages/db/package.json packages/db/
 COPY packages/geo/package.json packages/geo/
+COPY packages/mcp/package.json packages/mcp/
 COPY packages/trpc/package.json packages/trpc/
 COPY packages/auth/package.json packages/auth/
 COPY packages/json/package.json packages/json/
@@ -41,6 +42,7 @@ COPY packages/payments/package.json packages/payments/
 COPY packages/constants/package.json packages/constants/
 COPY packages/validation/package.json packages/validation/
 COPY packages/integrations/package.json packages/integrations/
+COPY packages/js-runtime/package.json packages/js-runtime/
 COPY patches ./patches
 
 # BUILD
@@ -96,6 +98,7 @@ COPY --from=build /app/apps/api ./apps/api
 # Packages
 COPY --from=build /app/packages/db ./packages/db
 COPY --from=build /app/packages/geo ./packages/geo
+COPY --from=build /app/packages/mcp ./packages/mcp
 COPY --from=build /app/packages/auth ./packages/auth
 COPY --from=build /app/packages/trpc ./packages/trpc
 COPY --from=build /app/packages/json ./packages/json
@@ -108,6 +111,7 @@ COPY --from=build /app/packages/payments ./packages/payments
 COPY --from=build /app/packages/constants ./packages/constants
 COPY --from=build /app/packages/validation ./packages/validation
 COPY --from=build /app/packages/integrations ./packages/integrations
+COPY --from=build /app/packages/js-runtime ./packages/js-runtime
 COPY --from=build /app/tooling/typescript ./tooling/typescript
 RUN pnpm db:codegen
 
@@ -115,4 +119,4 @@ WORKDIR /app/apps/api
 
 EXPOSE 3000
 
-CMD ["pnpm", "start"]
+CMD ["node", "dist/index.js"]

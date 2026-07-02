@@ -8,9 +8,9 @@ import type {
   IChartEventFilter,
   IChartEventItem,
   IChartLineType,
-  IChartProps,
   IChartRange,
-  ICriteria,
+  IReport,
+  IReportOptions,
 } from '@openpanel/validation';
 
 import type { Report as DbReport, ReportLayout } from '../prisma-client';
@@ -48,6 +48,7 @@ export function transformReportEventItem(
       id: item.id ?? alphabetIds[index]!,
       formula: item.formula || '',
       displayName: item.displayName,
+      hideSeries: item.hideSeries,
     };
   }
 
@@ -65,17 +66,22 @@ export function transformReportEventItem(
 
 export function transformReport(
   report: DbReport & { layout?: ReportLayout | null },
-): IChartProps & { id: string; layout?: ReportLayout | null } {
+): IReport & {
+  id: string;
+  layout?: ReportLayout | null;
+} {
+  const options = report.options as IReportOptions | null | undefined;
+
   return {
     id: report.id,
     projectId: report.projectId,
-    series:
-      (report.events as IChartEventItem[]).map(transformReportEventItem) ?? [],
-    breakdowns: report.breakdowns as IChartBreakdown[],
+    name: report.name || 'Untitled',
     chartType: report.chartType,
     lineType: (report.lineType as IChartLineType) ?? lineTypes.monotone,
     interval: report.interval,
-    name: report.name || 'Untitled',
+    series:
+      (report.events as IChartEventItem[]).map(transformReportEventItem) ?? [],
+    breakdowns: report.breakdowns as IChartBreakdown[],
     range:
       report.range in deprecated_timeRanges
         ? '30d'
@@ -84,10 +90,11 @@ export function transformReport(
     formula: report.formula ?? undefined,
     metric: report.metric ?? 'sum',
     unit: report.unit ?? undefined,
-    criteria: (report.criteria as ICriteria) ?? undefined,
-    funnelGroup: report.funnelGroup ?? undefined,
-    funnelWindow: report.funnelWindow ?? undefined,
     layout: report.layout ?? undefined,
+    options: options ?? undefined,
+    visibleSeries: report.visibleSeries ?? undefined,
+    startDate: report.startDate ?? undefined,
+    endDate: report.endDate ?? undefined,
   };
 }
 
@@ -119,4 +126,79 @@ export async function getReportById(id: string) {
   }
 
   return transformReport(report);
+}
+
+import { AggregateChartEngine, ChartEngine } from '../engine';
+import { getDashboardById } from './dashboard.service';
+import { getChartStartEndDate } from './date.service';
+import { funnelService } from './funnel.service';
+import { getSettingsForProject } from './organization.service';
+
+export async function listReportsCore(input: {
+  projectId: string;
+  dashboardId: string;
+  organizationId: string;
+}) {
+  const dashboard = await getDashboardById(input.dashboardId, input.projectId);
+  if (!dashboard) {
+    return [];
+  }
+  const reports = await getReportsByDashboardId(input.dashboardId);
+  return reports.map((r) => ({
+    id: r.id,
+    name: r.name,
+    chartType: r.chartType,
+    range: r.range,
+    interval: r.interval,
+    metric: r.metric,
+    series: r.series.map((s) =>
+      s.type === 'formula'
+        ? { type: 'formula', id: s.id, formula: s.formula }
+        : { type: 'event', id: s.id, name: s.name, displayName: s.displayName, segment: s.segment },
+    ),
+    breakdowns: r.breakdowns,
+  }));
+}
+
+export async function getReportDataCore(input: {
+  projectId: string;
+  reportId: string;
+  organizationId: string;
+}) {
+  const rawReport = await db.report.findUnique({
+    where: { id: input.reportId, projectId: input.projectId },
+    include: { layout: true },
+  });
+
+  if (!rawReport) {
+    throw new Error(`Report not found: ${input.reportId}`);
+  }
+
+  const report = transformReport(rawReport);
+  const { timezone } = await getSettingsForProject(input.projectId);
+  const { startDate, endDate } = getChartStartEndDate(report, timezone);
+  const chartInput = { ...report, startDate, endDate, timezone };
+
+  const meta = {
+    id: report.id,
+    name: report.name,
+    chartType: report.chartType,
+    range: report.range,
+    interval: report.interval,
+    startDate,
+    endDate,
+  };
+
+  if (report.chartType === 'funnel') {
+    const result = await funnelService.getFunnel(chartInput);
+    return { ...meta, data: result };
+  }
+
+  if (report.chartType === 'metric') {
+    const result = await AggregateChartEngine.execute(chartInput);
+    return { ...meta, data: result };
+  }
+
+  const result = await ChartEngine.execute(chartInput);
+  return { ...meta, data: result };
 }

@@ -1,16 +1,14 @@
-import { getPreviousMetric, groupByLabels } from '@openpanel/common';
 import type { ISerieDataItem } from '@openpanel/common';
+import { groupByLabels } from '@openpanel/common';
 import { alphabetIds } from '@openpanel/constants';
 import type {
   FinalChart,
   IChartEventItem,
-  IChartInput,
+  IReportInput,
 } from '@openpanel/validation';
 import { chQuery } from '../clickhouse/client';
-import {
-  getAggregateChartSql,
-  getChartPrevStartEndDate,
-} from '../services/chart.service';
+import { getAggregateChartSql } from '../services/chart.service';
+import { getChartPrevStartEndDate } from '../services/date.service';
 import {
   getOrganizationSubscriptionChartEndDate,
   getSettingsForProject,
@@ -26,14 +24,14 @@ import type { ConcreteSeries } from './types';
  * Chart Engine - Main entry point
  * Executes the pipeline: normalize -> plan -> fetch -> compute -> format
  */
-export async function executeChart(input: IChartInput): Promise<FinalChart> {
+export async function executeChart(input: IReportInput): Promise<FinalChart> {
   // Stage 1: Normalize input
   const normalized = await normalize(input);
 
   // Handle subscription end date limit
   const endDate = await getOrganizationSubscriptionChartEndDate(
     input.projectId,
-    normalized.endDate,
+    normalized.endDate
   );
   if (endDate) {
     normalized.endDate = endDate;
@@ -73,6 +71,7 @@ export async function executeChart(input: IChartInput): Promise<FinalChart> {
     executionPlan.definitions,
     includeAlphaIds,
     previousSeries,
+    normalized.limit
   );
 
   return response;
@@ -83,7 +82,7 @@ export async function executeChart(input: IChartInput): Promise<FinalChart> {
  * Executes a simplified pipeline: normalize -> fetch aggregate -> format
  */
 export async function executeAggregateChart(
-  input: IChartInput,
+  input: IReportInput
 ): Promise<FinalChart> {
   // Stage 1: Normalize input
   const normalized = await normalize(input);
@@ -91,7 +90,7 @@ export async function executeAggregateChart(
   // Handle subscription end date limit
   const endDate = await getOrganizationSubscriptionChartEndDate(
     input.projectId,
-    normalized.endDate,
+    normalized.endDate
   );
   if (endDate) {
     normalized.endDate = endDate;
@@ -127,27 +126,29 @@ export async function executeAggregateChart(
       endDate: normalized.endDate,
       breakdowns: normalized.breakdowns,
       limit: normalized.limit,
+      metric: normalized.metric,
+      previous: normalized.previous,
       timezone,
     };
 
     // Execute aggregate query
     let queryResult = await chQuery<ISerieDataItem>(
-      getAggregateChartSql(queryInput),
+      await getAggregateChartSql(queryInput),
       {
         session_timezone: timezone,
-      },
+      }
     );
 
     // Fallback: if no results with breakdowns, try without breakdowns
     if (queryResult.length === 0 && normalized.breakdowns.length > 0) {
       queryResult = await chQuery<ISerieDataItem>(
-        getAggregateChartSql({
+        await getAggregateChartSql({
           ...queryInput,
           breakdowns: [],
         }),
         {
           session_timezone: timezone,
-        },
+        }
       );
     }
 
@@ -251,25 +252,27 @@ export async function executeAggregateChart(
         endDate: previousPeriod.endDate,
         breakdowns: normalized.breakdowns,
         limit: normalized.limit,
+        metric: normalized.metric,
+        previous: normalized.previous,
         timezone,
       };
 
       let queryResult = await chQuery<ISerieDataItem>(
-        getAggregateChartSql(queryInput),
+        await getAggregateChartSql(queryInput),
         {
           session_timezone: timezone,
-        },
+        }
       );
 
       if (queryResult.length === 0 && normalized.breakdowns.length > 0) {
         queryResult = await chQuery<ISerieDataItem>(
-          getAggregateChartSql({
+          await getAggregateChartSql({
             ...queryInput,
             breakdowns: [],
           }),
           {
             session_timezone: timezone,
-          },
+          }
         );
       }
 
@@ -340,7 +343,7 @@ export async function executeAggregateChart(
     normalized.series,
     includeAlphaIds,
     previousSeries,
-    normalized.limit,
+    normalized.limit
   );
 
   return response;

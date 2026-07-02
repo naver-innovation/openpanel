@@ -5,7 +5,7 @@ description: Learn how to easily track your revenue with OpenPanel and how to ge
 
 import { FlowStep } from '@/components/flow-step';
 
-Revenue tracking is a great way to get a better understanding of what your best revenue source is. On this page we'll break down how to get started.
+[Revenue tracking](/features/revenue-tracking) is a great way to get a better understanding of what your best revenue source is. On this page we'll break down how to get started.
 
 Before we start, we need to know some fundamentals about how OpenPanel and your payment provider work and how we can link a payment to a visitor.
 
@@ -33,7 +33,7 @@ This is the most common flow and most secure one. Your backend receives webhooks
 <FlowStep step={2} actor="Visitor" description="Makes a purchase" icon="visitor" />
 
 <FlowStep step={3} actor="Your website" description="Does a POST request to get the checkout URL" icon="website">
-When you create the checkout, you should first call `op.fetchDeviceId()`, which will return your visitor's current `deviceId`. Pass this to your checkout endpoint.
+When you create the checkout, you should first call `op.getDeviceId()`, which will return your visitor's current `deviceId`. Pass this to your checkout endpoint.
 
 ```javascript
 fetch('https://domain.com/api/checkout', {
@@ -42,7 +42,7 @@ fetch('https://domain.com/api/checkout', {
     'Content-Type': 'application/json',
   },
   body: JSON.stringify({
-    deviceId: await op.fetchDeviceId(), // ✅ since deviceId is here we can link the payment now
+    deviceId: op.getDeviceId(), // ✅ since deviceId is here we can link the payment now
     // ... other checkout data
   }),
 })
@@ -360,5 +360,5 @@ op.clearRevenue(): void
 ### Fetch your current users device id
 
 ```javascript
-op.fetchDeviceId(): Promise<string>
+op.getDeviceId(): string
 ```

@@ -175,6 +175,48 @@ COOKIE_SECRET=your-random-secret-here
 Never use the default value in production! Always generate a unique secret.
 </Callout>
 
+### COOKIE_TLDS
+
+**Type**: `string` (comma-separated)  
+**Required**: No  
+**Default**: None
+
+Custom multi-part TLDs for cookie domain handling. Use this when deploying on domains with public suffixes that aren't recognized by default (e.g., `.my.id`, `.web.id`, `.co.id`).
+
+**Example**:
+```bash
+# For domains like abc.my.id
+COOKIE_TLDS=my.id
+
+# Multiple TLDs
+COOKIE_TLDS=my.id,web.id,co.id
+```
+
+<Callout>
+This is required when using domain suffixes that are public suffixes (like `.co.uk`). Without this, the browser will reject authentication cookies. Common examples include Indonesian domains (`.my.id`, `.web.id`, `.co.id`).
+</Callout>
+
+### CUSTOM_COOKIE_DOMAIN
+
+**Type**: `string`  
+**Required**: No  
+**Default**: None
+
+Override the automatic cookie domain detection and set a specific domain for authentication cookies. Useful when proxying the API through your main domain or when you need precise control over cookie scope.
+
+**Example**:
+```bash
+# Set cookies only on the main domain
+CUSTOM_COOKIE_DOMAIN=.example.com
+
+# Set cookies on a specific subdomain
+CUSTOM_COOKIE_DOMAIN=.app.example.com
+```
+
+<Callout>
+When set, this completely bypasses the automatic domain parsing logic. The cookie will always be set as secure. Include a leading dot (`.`) to allow the cookie to be shared across subdomains.
+</Callout>
+
 ### DEMO_USER_ID
 
 **Type**: `string`  
@@ -220,26 +262,20 @@ ALLOW_INVITATION=false
 
 ## AI Features
 
-### AI_MODEL
+The in-app AI chat supports **OpenAI** and **Anthropic** models. Set one or both provider keys on the API service — the model picker in the chat UI automatically shows only the models whose provider has a key configured. If neither is set, the chat drawer still opens but shows setup instructions instead of suggestions.
 
-**Type**: `string`  
-**Required**: No  
-**Default**: `gpt-4.1-mini`
+Available models:
 
-AI model to use for the analytics assistant. Options: `gpt-4o`, `gpt-4o-mini`, `claude-3-5`.
-
-**Example**:
-```bash
-AI_MODEL=gpt-4o-mini
-```
+- **OpenAI** — `GPT-4.1`, `GPT-4.1 mini`, `GPT-5.4 mini`
+- **Anthropic** — `Claude Haiku 4.5`, `Claude Sonnet 4.6`, `Claude Opus 4.6`
 
 ### OPENAI_API_KEY
 
 **Type**: `string`  
-**Required**: No (required if using OpenAI models)  
+**Required**: No  
 **Default**: None
 
-OpenAI API key for AI features. Required if `AI_MODEL` is set to `gpt-4o` or `gpt-4o-mini`.
+OpenAI API key. When set, the OpenAI models appear in the chat model picker.
 
 **Example**:
 ```bash
@@ -249,31 +285,18 @@ OPENAI_API_KEY=sk-your-openai-api-key-here
 ### ANTHROPIC_API_KEY
 
 **Type**: `string`  
-**Required**: No (required if using Claude models)  
-**Default**: None
-
-Anthropic API key for Claude AI models. Required if `AI_MODEL` is set to `claude-3-5`.
-
-**Example**:
-```bash
-ANTHROPIC_API_KEY=your-anthropic-api-key-here
-```
-
-### GEMINI_API_KEY
-
-**Type**: `string`  
 **Required**: No  
 **Default**: None
 
-Google Gemini API key for Gemini AI models. Currently not used but reserved for future support.
+Anthropic API key. When set, the Claude models appear in the chat model picker.
 
 **Example**:
 ```bash
-GEMINI_API_KEY=your-gemini-api-key-here
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-api-key-here
 ```
 
 <Callout type="info">
-The AI assistant is optional. Without an API key configured, the AI chat feature will not be available, but all other OpenPanel features will continue to work normally.
+The AI assistant is optional. Without `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` set, every other OpenPanel feature continues to work normally.
 </Callout>
 
 ## Email
@@ -702,6 +725,27 @@ Port for the API service to listen on.
 API_PORT=3000
 ```
 
+### API_HOST
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `0.0.0.0` (production) / `localhost` (development)
+
+Host address for the API service to bind to. Set to `::` to enable IPv6 support (useful for platforms like Railway that use IPv6 for internal networking).
+
+**Example**:
+```bash
+# Default IPv4 only
+API_HOST=0.0.0.0
+
+# IPv6 (dual-stack, accepts both IPv4 and IPv6)
+API_HOST=::
+```
+
+<Callout>
+Use `API_HOST=::` when deploying on platforms like Railway where private networking requires IPv6. The `::` address enables dual-stack mode, accepting both IPv4 and IPv6 connections on most systems.
+</Callout>
+
 ## Logging
 
 ### LOG_LEVEL
@@ -792,8 +836,7 @@ For a basic self-hosted installation, these variables are required:
 
 - `RESEND_API_KEY` - For email features
 - `EMAIL_SENDER` - Email sender address
-- `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` - For AI features
-- `AI_MODEL` - AI model selection
+- `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` - For the in-app AI chat assistant
 
 ### See Also
 

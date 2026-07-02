@@ -10,35 +10,30 @@ import { Chart } from './chart';
 import CohortTable from './table';
 
 export function ReportRetentionChart() {
-  const {
-    report: {
-      series,
-      range,
-      projectId,
-      startDate,
-      endDate,
-      criteria,
-      interval,
-    },
-    isLazyLoading,
-  } = useReportChartContext();
-  const eventSeries = series.filter((item) => item.type === 'event');
+  const { isLazyLoading, report, shareId } = useReportChartContext();
+  const eventSeries = report.series.filter((item) => item.type === 'event');
   const firstEvent = (eventSeries[0]?.filters?.[0]?.value ?? []).map(String);
   const secondEvent = (eventSeries[1]?.filters?.[0]?.value ?? []).map(String);
   const isEnabled =
     firstEvent.length > 0 && secondEvent.length > 0 && !isLazyLoading;
+
+  const retentionOptions = report.options?.type === 'retention' ? report.options : undefined;
+  const criteria = retentionOptions?.criteria ?? 'on_or_after';
+
   const trpc = useTRPC();
   const res = useQuery(
     trpc.chart.cohort.queryOptions(
       {
         firstEvent,
         secondEvent,
-        projectId,
-        range,
-        startDate,
-        endDate,
+        projectId: report.projectId,
+        range: report.range,
+        startDate: report.startDate,
+        endDate: report.endDate,
         criteria,
-        interval,
+        interval: report.interval,
+        shareId,
+        id: 'id' in report ? report.id : undefined,
       },
       {
         placeholderData: keepPreviousData,

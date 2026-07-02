@@ -1,11 +1,10 @@
-import { Button } from '@/components/ui/button';
-import { pushModal } from '@/modals';
 import type { IServiceDashboards } from '@openpanel/db';
 import { useNavigate } from '@tanstack/react-router';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   BellIcon,
   BookOpenIcon,
+  Building2Icon,
   ChartLineIcon,
   ChevronDownIcon,
   CogIcon,
@@ -16,9 +15,12 @@ import {
   LayoutDashboardIcon,
   LayoutPanelTopIcon,
   PlusIcon,
+  SearchIcon,
   SparklesIcon,
+  TargetIcon,
   TrendingUpDownIcon,
   UndoDotIcon,
+  UserCircleIcon,
   UsersIcon,
   WallpaperIcon,
 } from 'lucide-react';
@@ -30,6 +32,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
+import { useChatState } from '@/components/chat/chat-context';
+import { SidebarChatComposer } from '@/components/chat/sidebar-chat-composer';
+import { pushModal } from '@/modals';
+import { cn } from '@/utils/cn';
 
 interface SidebarProjectMenuProps {
   dashboards: IServiceDashboards;
@@ -40,44 +46,53 @@ export default function SidebarProjectMenu({
 }: SidebarProjectMenuProps) {
   return (
     <>
-      <div className="mb-2 font-medium text-muted-foreground">Analytics</div>
-      <SidebarLink icon={WallpaperIcon} label="Overview" href={'/'} />
+      <SidebarChatComposer />
+      <div className="mb-2 font-medium text-muted-foreground text-sm">
+        Analytics
+      </div>
+      <SidebarLink href={'/'} icon={WallpaperIcon} label="Overview" />
       <SidebarLink
+        href={'/dashboards'}
         icon={LayoutPanelTopIcon}
         label="Dashboards"
-        href={'/dashboards'}
       />
       <SidebarLink
+        href={'/insights'}
         icon={TrendingUpDownIcon}
         label="Insights"
-        href={'/insights'}
       />
-      <SidebarLink icon={LayersIcon} label="Pages" href={'/pages'} />
-      <SidebarLink icon={Globe2Icon} label="Realtime" href={'/realtime'} />
-      <SidebarLink icon={GanttChartIcon} label="Events" href={'/events'} />
-      <SidebarLink icon={UsersIcon} label="Sessions" href={'/sessions'} />
-      <SidebarLink icon={UsersIcon} label="Profiles" href={'/profiles'} />
-      <div className="mt-4 mb-2 font-medium text-muted-foreground">Manage</div>
+      <SidebarLink href={'/pages'} icon={LayersIcon} label="Pages" />
+      <SidebarLink href={'/seo'} icon={SearchIcon} label="SEO" />
+      <SidebarLink href={'/realtime'} icon={Globe2Icon} label="Realtime" />
+      <SidebarLink href={'/events'} icon={GanttChartIcon} label="Events" />
+      <SidebarLink href={'/sessions'} icon={UsersIcon} label="Sessions" />
+      <SidebarLink href={'/profiles'} icon={UserCircleIcon} label="Profiles" />
+      <SidebarLink href={'/groups'} icon={Building2Icon} label="Groups" />
+      <SidebarLink href={'/cohorts'} icon={TargetIcon} label="Cohorts" />
+      <div className="mt-4 mb-2 font-medium text-muted-foreground text-sm">
+        Manage
+      </div>
       <SidebarLink
         exact={false}
+        href={'/settings'}
         icon={CogIcon}
         label="Settings"
-        href={'/settings'}
       />
-      <SidebarLink icon={GridIcon} label="References" href={'/references'} />
+      <SidebarLink href={'/references'} icon={GridIcon} label="References" />
       <SidebarLink
         exact={false}
+        href={'/notifications'}
         icon={BellIcon}
         label="Notifications"
-        href={'/notifications'}
       />
-      <SidebarLink icon={UndoDotIcon} label="Back to workspace" href={'..'} />
+      <SidebarLink href={'..'} icon={UndoDotIcon} label="Back to workspace" />
     </>
   );
 }
 
 export function ActionCTAButton() {
   const navigate = useNavigate();
+  const { openChatForContext } = useChatState();
 
   const ACTIONS = [
     {
@@ -97,11 +112,7 @@ export function ActionCTAButton() {
     {
       label: 'Ask AI',
       icon: SparklesIcon,
-      onClick: () =>
-        navigate({
-          to: '/$organizationId/$projectId/chat',
-          from: '/$organizationId/$projectId',
-        }),
+      onClick: () => openChatForContext(),
     },
     {
       label: 'Create dashboard',
@@ -137,43 +148,49 @@ export function ActionCTAButton() {
   }, []);
 
   return (
-    <div className="mb-4">
+    <div className="mb-2">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button className="w-full justify-between" size="default">
-            <div className="flex items-center gap-2">
-              <PlusIcon size={16} />
-              <div className="relative h-5 flex items-center">
-                <AnimatePresence mode="popLayout">
-                  <motion.span
-                    key={currentActionIndex}
-                    initial={{ y: 20, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    exit={{ y: -20, opacity: 0 }}
-                    transition={{
-                      type: 'spring',
-                      stiffness: 300,
-                      damping: 25,
-                      duration: 0.3,
-                    }}
-                    className="absolute whitespace-nowrap"
-                  >
-                    {ACTIONS[currentActionIndex].label}
-                  </motion.span>
-                </AnimatePresence>
-              </div>
+          <button
+            type="button"
+            className={cn(
+              'group flex w-full items-center gap-2 rounded-md border border-border bg-def-200 px-3 py-2 text-left',
+              'text-[13px] font-medium text-foreground',
+              'transition-colors hover:bg-def-300',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            )}
+          >
+            <PlusIcon className="size-5 shrink-0" />
+            <div className="relative flex h-5 flex-1 items-center overflow-hidden">
+              <AnimatePresence mode="popLayout">
+                <motion.span
+                  animate={{ y: 0, opacity: 1 }}
+                  className="absolute whitespace-nowrap"
+                  exit={{ y: -16, opacity: 0 }}
+                  initial={{ y: 16, opacity: 0 }}
+                  key={currentActionIndex}
+                  transition={{
+                    type: 'spring',
+                    stiffness: 300,
+                    damping: 25,
+                    duration: 0.3,
+                  }}
+                >
+                  {ACTIONS[currentActionIndex].label}
+                </motion.span>
+              </AnimatePresence>
             </div>
-            <ChevronDownIcon size={16} />
-          </Button>
+            <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+          </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent className="w-56" align="start">
+        <DropdownMenuContent align="start" className="w-56">
           {ACTIONS.map((action) => (
             <DropdownMenuItem
-              onClick={action.onClick}
               className="cursor-pointer"
               key={action.label}
+              onClick={action.onClick}
             >
-              <action.icon className="mr-2 h-4 w-4" />
+              <action.icon className="mr-2 size-4" />
               {action.label}
             </DropdownMenuItem>
           ))}

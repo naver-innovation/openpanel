@@ -2,8 +2,13 @@ import { authRouter } from './routers/auth';
 import { chartRouter } from './routers/chart';
 import { chatRouter } from './routers/chat';
 import { clientRouter } from './routers/client';
+import { cohortRouter } from './routers/cohort';
+import { conversationRouter } from './routers/conversation';
 import { dashboardRouter } from './routers/dashboard';
+import { emailRouter } from './routers/email';
 import { eventRouter } from './routers/event';
+import { groupRouter } from './routers/group';
+import { gscRouter } from './routers/gsc';
 import { importRouter } from './routers/import';
 import { insightRouter } from './routers/insight';
 import { integrationRouter } from './routers/integration';
@@ -20,6 +25,7 @@ import { sessionRouter } from './routers/session';
 import { shareRouter } from './routers/share';
 import { subscriptionRouter } from './routers/subscription';
 import { userRouter } from './routers/user';
+import { widgetRouter } from './routers/widget';
 import { createTRPCRouter } from './trpc';
 /**
  * This is the primary router for your server.
@@ -48,7 +54,13 @@ export const appRouter = createTRPCRouter({
   overview: overviewRouter,
   realtime: realtimeRouter,
   chat: chatRouter,
+  conversation: conversationRouter,
   insight: insightRouter,
+  widget: widgetRouter,
+  email: emailRouter,
+  gsc: gscRouter,
+  group: groupRouter,
+  cohort: cohortRouter,
 });
 
 // export type definition of API

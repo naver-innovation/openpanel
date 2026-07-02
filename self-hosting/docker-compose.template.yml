@@ -69,7 +69,6 @@ services:
     restart: always
     volumes:
       - op-ch-data:/var/lib/clickhouse
-      - op-ch-logs:/var/log/clickhouse-server
       - ./clickhouse/clickhouse-config.xml:/etc/clickhouse-server/config.d/op-config.xml:ro
       - ./clickhouse/clickhouse-user-config.xml:/etc/clickhouse-server/users.d/op-user-config.xml:ro
       - ./clickhouse/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
@@ -91,7 +90,7 @@ services:
         max-file: "3"
 
   op-api:
-    image: lindesvard/openpanel-api:2.0.0
+    image: lindesvard/openpanel-api:2
     restart: always
     command: >
       sh -c "
@@ -121,7 +120,7 @@ services:
         max-file: "3"
 
   op-dashboard:
-    image: lindesvard/openpanel-dashboard:2.0.0
+    image: lindesvard/openpanel-dashboard:2
     restart: always
     depends_on:
       op-api:
@@ -141,7 +140,7 @@ services:
         max-file: "3"
 
   op-worker:
-    image: lindesvard/openpanel-worker:2.0.0
+    image: lindesvard/openpanel-worker:2
     restart: always
     depends_on:
       op-api:
@@ -168,8 +167,6 @@ volumes:
   op-kv-data:
     driver: local
   op-ch-data:
-    driver: local
-  op-ch-logs:
     driver: local
   op-proxy-data:
     driver: local

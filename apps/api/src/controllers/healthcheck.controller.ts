@@ -1,59 +1,78 @@
-import { isShuttingDown } from '@/utils/graceful-shutdown';
+import { tryCatch } from '@openpanel/common';
 import { chQuery, db } from '@openpanel/db';
 import { getRedisCache } from '@openpanel/redis';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { isShuttingDown } from '@/utils/graceful-shutdown';
 
-// For docker compose healthcheck
 export async function healthcheck(
   request: FastifyRequest,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) {
-  try {
-    const redisRes = await getRedisCache().ping();
-    const dbRes = await db.$executeRaw`SELECT 1`;
-    const chRes = await chQuery('SELECT 1');
-    const status = redisRes && dbRes && chRes ? 200 : 503;
+  const [redisResult, dbResult, chResult] = await Promise.all([
+    tryCatch(async () => (await getRedisCache().ping()) === 'PONG'),
+    tryCatch(async () => !!(await db.$executeRaw`SELECT 1`)),
+    tryCatch(async () => (await chQuery('SELECT 1')).length > 0),
+  ]);
 
-    reply.status(status).send({
-      ready: status === 200,
-      redis: redisRes === 'PONG',
-      db: !!dbRes,
-      ch: chRes && chRes.length > 0,
-    });
-  } catch (error) {
-    return reply.status(503).send({
-      ready: false,
-      reason: 'dependencies not ready',
-    });
+  const dependencies = {
+    redis: redisResult.ok && redisResult.data,
+    db: dbResult.ok && dbResult.data,
+    ch: chResult.ok && chResult.data,
+  };
+  const dependencyErrors = {
+    redis: redisResult.error?.message,
+    db: dbResult.error?.message,
+    ch: chResult.error?.message,
+  };
+
+  const failedDependencies = Object.entries(dependencies)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+  const workingDependencies = Object.entries(dependencies)
+    .filter(([, ok]) => ok)
+    .map(([name]) => name);
+
+  const status = failedDependencies.length === 0 ? 200 : 503;
+
+  if (status === 200) {
+    request.log.debug(
+      {
+        workingDependencies,
+        failedDependencies,
+        dependencies,
+      },
+      'healthcheck passed'
+    );
+  } else {
+    request.log.warn(
+      {
+        workingDependencies,
+        failedDependencies,
+        dependencies,
+        dependencyErrors,
+      },
+      'healthcheck failed'
+    );
   }
+
+  return reply.status(status).send({
+    ready: status === 200,
+    ...dependencies,
+    failedDependencies,
+    workingDependencies,
+  });
 }
 
-// Kubernetes - Liveness probe - returns 200 if process is alive
-export async function liveness(request: FastifyRequest, reply: FastifyReply) {
+// Kubernetes liveness — shallow, event loop only.
+export async function liveness(_request: FastifyRequest, reply: FastifyReply) {
   return reply.status(200).send({ live: true });
 }
 
-// Kubernetes - Readiness probe - returns 200 only when accepting requests, 503 during shutdown
-export async function readiness(request: FastifyRequest, reply: FastifyReply) {
+// Kubernetes readiness — shallow + shutdown-aware. Dependency health lives on
+// /healthcheck so a downstream blip cannot trigger mass pod restarts.
+export async function readiness(_request: FastifyRequest, reply: FastifyReply) {
   if (isShuttingDown()) {
     return reply.status(503).send({ ready: false, reason: 'shutting down' });
-  }
-
-  // Perform lightweight dependency checks for readiness
-  const redisRes = await getRedisCache().ping();
-  const dbRes = await db.project.findFirst();
-  const chRes = await chQuery('SELECT 1');
-
-  const isReady = redisRes && dbRes && chRes;
-
-  if (!isReady) {
-    return reply.status(503).send({
-      ready: false,
-      reason: 'dependencies not ready',
-      redis: redisRes === 'PONG',
-      db: !!dbRes,
-      ch: chRes && chRes.length > 0,
-    });
   }
 
   return reply.status(200).send({ ready: true });

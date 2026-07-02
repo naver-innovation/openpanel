@@ -1,23 +1,9 @@
 import { generateSalt } from '@openpanel/common/server';
 
-import { cacheableLru } from '@openpanel/redis';
+import { cacheable } from '@openpanel/redis';
 import { db } from '../prisma-client';
 
-export async function getCurrentSalt() {
-  const salt = await db.salt.findFirst({
-    orderBy: {
-      createdAt: 'desc',
-    },
-  });
-
-  if (!salt) {
-    throw new Error('No salt found');
-  }
-
-  return salt.salt;
-}
-
-export const getSalts = cacheableLru(
+export const getSalts = cacheable(
   'op:salt',
   async () => {
     const [curr, prev] = await db.salt.findMany({
@@ -31,21 +17,14 @@ export const getSalts = cacheableLru(
       throw new Error('No salt found');
     }
 
-    if (!prev) {
-      throw new Error('No salt found');
-    }
-
     const salts = {
       current: curr.salt,
-      previous: prev.salt,
+      previous: prev?.salt ?? curr.salt,
     };
 
     return salts;
   },
-  {
-    maxSize: 2,
-    ttl: 60 * 5,
-  },
+  60 * 5,
 );
 
 export async function createInitialSalts() {

@@ -47,6 +47,10 @@ export async function deleteFromClickhouse(projectIds: string[]) {
     TABLE_NAMES.dau_mv,
     TABLE_NAMES.event_names_mv,
     TABLE_NAMES.event_property_values_mv,
+    TABLE_NAMES.cohort_members,
+    TABLE_NAMES.cohort_metadata,
+    TABLE_NAMES.profile_event_summary_mv,
+    TABLE_NAMES.profile_event_property_summary_mv,
   ];
 
   for (const table of tables) {
@@ -55,7 +59,7 @@ export async function deleteFromClickhouse(projectIds: string[]) {
       ? `ALTER TABLE ${getReplicatedTableName(table)} DELETE WHERE ${where};`
       : `DELETE FROM ${getReplicatedTableName(table)} WHERE ${where};`;
 
-    logger.info('Deleting from ClickHouse table:', { query });
+    logger.info({ query }, 'Deleting from ClickHouse table:');
     await ch.command({
       query,
       clickhouse_settings: {

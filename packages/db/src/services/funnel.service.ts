@@ -1,9 +1,5 @@
 import { ifNaN } from '@openpanel/common';
-import type {
-  IChartEvent,
-  IChartEventItem,
-  IChartInput,
-} from '@openpanel/validation';
+import type { IChartEvent, IReportInput } from '@openpanel/validation';
 import { last, reverse, uniq } from 'ramda';
 import sqlstring from 'sqlstring';
 import { ch } from '../clickhouse/client';
@@ -11,57 +7,85 @@ import { TABLE_NAMES } from '../clickhouse/client';
 import { clix } from '../clickhouse/query-builder';
 import { createSqlBuilder } from '../sql-builder';
 import {
+  buildInlineCohortJoin,
+  collectCohortIds,
+  extractCohortId,
+  fetchCohortsMetadata,
   getEventFiltersWhereClause,
   getSelectPropertyKey,
 } from './chart.service';
 import { onlyReportEvents } from './reports.service';
 
+/** Display label for null/empty breakdown values (e.g. property not set). */
+export const EMPTY_BREAKDOWN_LABEL = 'Not set';
+
+function normalizeBreakdownValue(value: unknown): string {
+  if (value == null || value === '') {
+    return EMPTY_BREAKDOWN_LABEL;
+  }
+  const s = String(value).trim();
+  return s === '' ? EMPTY_BREAKDOWN_LABEL : s;
+}
+
 export class FunnelService {
   constructor(private client: typeof ch) {}
 
-  getFunnelGroup(group?: string): [string, string] {
-    return group === 'profile_id'
-      ? [`COALESCE(nullIf(s.pid, ''), profile_id)`, 'profile_id']
-      : ['session_id', 'session_id'];
+  /**
+   * Returns the grouping strategy for the funnel.
+   * Determines whether windowFunnel is computed per session_id or profile_id.
+   */
+  getFunnelGroup(group?: string): 'profile_id' | 'session_id' {
+    return group === 'profile_id' ? 'profile_id' : 'session_id';
   }
 
-  getFunnelConditions(events: IChartEvent[] = []): string[] {
+  getFunnelConditions(events: IChartEvent[] = [], projectId?: string): string[] {
     return events.map((event) => {
       const { sb, getWhere } = createSqlBuilder();
-      sb.where = getEventFiltersWhereClause(event.filters);
-      sb.where.name = `name = ${sqlstring.escape(event.name)}`;
+      sb.where = getEventFiltersWhereClause(event.filters, projectId);
+      sb.where.name = `events.name = ${sqlstring.escape(event.name)}`;
       return getWhere().replace('WHERE ', '');
     });
   }
 
+  /**
+   * Builds the funnel CTE.
+   * - When group === 'session_id': windowFunnel is computed per session_id.
+   *   profile_id is resolved via argMax to handle identity changes mid-session.
+   * - When group === 'profile_id': windowFunnel is computed directly per profile_id.
+   *   This correctly handles cross-session funnel completions.
+   */
   buildFunnelCte({
     projectId,
     startDate,
     endDate,
     eventSeries,
     funnelWindowMilliseconds,
-    group,
     timezone,
     additionalSelects = [],
     additionalGroupBy = [],
+    group = 'session_id',
   }: {
     projectId: string;
     startDate: string;
     endDate: string;
     eventSeries: IChartEvent[];
     funnelWindowMilliseconds: number;
-    group: [string, string];
     timezone: string;
     additionalSelects?: string[];
     additionalGroupBy?: string[];
+    group?: 'session_id' | 'profile_id';
   }) {
-    const funnels = this.getFunnelConditions(eventSeries);
+    const funnels = this.getFunnelConditions(eventSeries, projectId);
+    const primaryKey = group === 'profile_id' ? 'profile_id' : 'session_id';
 
     return clix(this.client, timezone)
       .select([
-        `${group[0]} AS ${group[1]}`,
-        ...additionalSelects,
+        primaryKey,
         `windowFunnel(${funnelWindowMilliseconds}, 'strict_increase')(toUInt64(toUnixTimestamp64Milli(created_at)), ${funnels.join(', ')}) AS level`,
+        ...(group === 'session_id'
+          ? ['argMax(profile_id, created_at) AS profile_id']
+          : []),
+        ...additionalSelects,
       ])
       .from(TABLE_NAMES.events, false)
       .where('project_id', '=', projectId)
@@ -70,11 +94,11 @@ export class FunnelService {
         clix.datetime(endDate, 'toDateTime'),
       ])
       .where(
-        'name',
+        'events.name',
         'IN',
         eventSeries.map((e) => e.name),
       )
-      .groupBy([group[1], ...additionalGroupBy]);
+      .groupBy([primaryKey, ...additionalGroupBy]);
   }
 
   buildSessionsCte({
@@ -139,20 +163,24 @@ export class FunnelService {
       ];
     }
 
-    // Group by breakdown values
+    // Group by breakdown values (normalize empty/null to "Not set")
     const series = funnel.reduce(
       (acc, f) => {
         if (limit && Object.keys(acc).length >= limit) {
           return acc;
         }
 
-        const key = breakdowns.map((b, index) => f[`b_${index}`]).join('|');
+        const key = breakdowns
+          .map((b, index) => normalizeBreakdownValue(f[`b_${index}`]))
+          .join('|');
         if (!acc[key]) {
           acc[key] = [];
         }
         acc[key]!.push({
           id: key,
-          breakdowns: breakdowns.map((b, index) => f[`b_${index}`]),
+          breakdowns: breakdowns.map((b, index) =>
+            normalizeBreakdownValue(f[`b_${index}`]),
+          ),
           level: f.level,
           count: f.count,
         });
@@ -185,15 +213,18 @@ export class FunnelService {
     startDate,
     endDate,
     series,
-    funnelWindow = 24,
-    funnelGroup,
+    options,
     breakdowns = [],
     limit,
     timezone = 'UTC',
-  }: IChartInput & { timezone: string; events?: IChartEvent[] }) {
+  }: IReportInput & { timezone: string; events?: IChartEvent[] }) {
     if (!startDate || !endDate) {
       throw new Error('startDate and endDate are required');
     }
+
+    const funnelOptions = options?.type === 'funnel' ? options : undefined;
+    const funnelWindow = funnelOptions?.funnelWindow ?? 24;
+    const funnelGroup = funnelOptions?.funnelGroup;
 
     const eventSeries = onlyReportEvents(series);
 
@@ -209,11 +240,25 @@ export class FunnelService {
     const anyBreakdownOnProfile = breakdowns.some((b) =>
       b.name.startsWith('profile.'),
     );
-
-    // Create the funnel CTE
-    const breakdownSelects = breakdowns.map(
-      (b, index) => `${getSelectPropertyKey(b.name)} as b_${index}`,
+    const anyFilterOnGroup = eventSeries.some((e) =>
+      e.filters?.some((f) => f.name.startsWith('group.')),
     );
+    const anyBreakdownOnGroup = breakdowns.some((b) =>
+      b.name.startsWith('group.'),
+    );
+    const needsGroupArrayJoin =
+      anyFilterOnGroup || anyBreakdownOnGroup || funnelGroup === 'group';
+
+    const allFilters = eventSeries.flatMap((e) => e.filters ?? []);
+    const cohortIds = collectCohortIds(allFilters, breakdowns);
+    const cohortMetadata = await fetchCohortsMetadata(cohortIds);
+
+    // Create the funnel CTE (session-level)
+    const breakdownSelects = breakdowns.map((b, index) => {
+      const bId = extractCohortId(b.name);
+      const bName = bId ? cohortMetadata.get(bId)?.name : undefined;
+      return `${getSelectPropertyKey(b.name, projectId, bId ?? undefined, bName)} as b_${index}`;
+    });
     const breakdownGroupBy = breakdowns.map((b, index) => `b_${index}`);
 
     const funnelCte = this.buildFunnelCte({
@@ -222,40 +267,61 @@ export class FunnelService {
       endDate,
       eventSeries,
       funnelWindowMilliseconds,
-      group,
       timezone,
       additionalSelects: breakdownSelects,
       additionalGroupBy: breakdownGroupBy,
+      group,
     });
 
     if (anyFilterOnProfile || anyBreakdownOnProfile) {
+      // Collect profile columns needed for filters and breakdowns (same as conversion.service)
+      const profileFields = new Set<string>(['id']);
+      for (const f of profileFilters) {
+        profileFields.add(f.split('.')[0]!);
+      }
+      for (const b of breakdowns.filter((x) => x.name.startsWith('profile.'))) {
+        const fieldName = b.name.replace('profile.', '').split('.')[0];
+        if (fieldName === 'properties') {
+          profileFields.add('properties');
+        } else if (['email', 'first_name', 'last_name'].includes(fieldName!)) {
+          profileFields.add(fieldName!);
+        }
+      }
+      const profileSelectColumns = Array.from(profileFields).join(', ');
       funnelCte.leftJoin(
-        `(SELECT id, ${uniq(profileFilters.map((f) => f.split('.')[0]))} FROM ${TABLE_NAMES.profiles} FINAL
+        `(SELECT ${profileSelectColumns} FROM ${TABLE_NAMES.profiles} FINAL
           WHERE project_id = ${sqlstring.escape(projectId)}) as profile`,
         'profile.id = events.profile_id',
       );
     }
 
-    // Create the sessions CTE if needed
-    const sessionsCte =
-      group[0] !== 'session_id'
-        ? this.buildSessionsCte({
-            projectId,
-            startDate,
-            endDate,
-            timezone,
-          })
-        : null;
+    if (needsGroupArrayJoin) {
+      funnelCte.rawJoin('ARRAY JOIN groups AS _group_id');
+      funnelCte.rawJoin('LEFT ANY JOIN _g ON _g.id = _group_id');
+    }
+
+    for (const cohortId of cohortIds) {
+      funnelCte.rawJoin(buildInlineCohortJoin(cohortId, projectId, 'events'));
+    }
 
     // Base funnel query with CTEs
     const funnelQuery = clix(this.client, timezone);
 
-    if (sessionsCte) {
-      funnelCte.leftJoin('sessions s', 's.sid = events.session_id');
-      funnelQuery.with('sessions', sessionsCte);
+    if (needsGroupArrayJoin) {
+      funnelQuery.with(
+        '_g',
+        `SELECT id, name, type, properties FROM ${TABLE_NAMES.groups} FINAL WHERE project_id = ${sqlstring.escape(projectId)}`,
+      );
     }
 
-    funnelQuery.with('funnel', funnelCte);
+    funnelQuery.with('session_funnel', funnelCte);
+
+    // windowFunnel is computed per the primary key (profile_id or session_id),
+    // so we just filter out level=0 rows — no re-aggregation needed.
+    funnelQuery.with(
+      'funnel',
+      'SELECT * FROM session_funnel WHERE level != 0',
+    );
 
     funnelQuery
       .select<{
@@ -268,7 +334,6 @@ export class FunnelService {
         'count() as count',
       ])
       .from('funnel')
-      .where('level', '!=', 0)
       .groupBy(['level', ...breakdowns.map((b, index) => `b_${index}`)])
       .orderBy('level', 'DESC');
 
@@ -361,3 +426,78 @@ export class FunnelService {
 }
 
 export const funnelService = new FunnelService(ch);
+
+import { getSettingsForProject } from './organization.service';
+
+export async function getFunnelCore(input: {
+  projectId: string;
+  startDate: string;
+  endDate: string;
+  steps: string[];
+  windowHours?: number;
+  groupBy?: 'session_id' | 'profile_id';
+}) {
+  const { timezone } = await getSettingsForProject(input.projectId);
+  const eventSeries = input.steps.map((name, index) => ({
+    id: String(index + 1),
+    type: 'event' as const,
+    name,
+    displayName: name,
+    segment: 'user' as const,
+    filters: [],
+  }));
+
+  const result = await funnelService.getFunnel({
+    projectId: input.projectId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    series: eventSeries,
+    breakdowns: [],
+    chartType: 'funnel',
+    interval: 'day',
+    range: 'custom',
+    previous: false,
+    metric: 'sum',
+    options: {
+      type: 'funnel',
+      funnelWindow: input.windowHours ?? 24,
+      funnelGroup: input.groupBy ?? 'session_id',
+    },
+    timezone,
+  });
+
+  const primarySeries = result[0];
+  if (!primarySeries) {
+    return {
+      steps: [],
+      totalUsers: 0,
+      completedUsers: 0,
+      overallConversionRate: 0,
+    };
+  }
+
+  const steps = primarySeries.steps.map((step, index) => ({
+    step: index + 1,
+    eventName: step.event.displayName || step.event.name,
+    users: step.count,
+    conversionRateFromStart: Math.round(step.percent * 100) / 100,
+    dropoffPercent:
+      step.dropoffPercent != null
+        ? Math.round(step.dropoffPercent * 100) / 100
+        : null,
+    isHighestDropoff: step.isHighestDropoff,
+  }));
+
+  const totalUsers = steps[0]?.users ?? 0;
+  const completedUsers = steps[steps.length - 1]?.users ?? 0;
+
+  return {
+    steps,
+    totalUsers,
+    completedUsers,
+    overallConversionRate:
+      totalUsers > 0
+        ? Math.round((completedUsers / totalUsers) * 10000) / 100
+        : 0,
+  };
+}

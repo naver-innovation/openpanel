@@ -5,19 +5,26 @@ import { cn } from '@/utils/cn';
 import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
-import { useReportChartContext } from '../context';
+import { useChartInput, useReportChartContext } from '../context';
 import { Chart } from './chart';
 
 export function ReportBarChart() {
-  const { isLazyLoading, report } = useReportChartContext();
+  const { isLazyLoading, shareId } = useReportChartContext();
+  const chartInput = useChartInput();
   const trpc = useTRPC();
 
   const res = useQuery(
-    trpc.chart.aggregate.queryOptions(report, {
-      placeholderData: keepPreviousData,
-      staleTime: 1000 * 60 * 1,
-      enabled: !isLazyLoading,
-    }),
+    trpc.chart.aggregate.queryOptions(
+      {
+        ...chartInput,
+        shareId,
+      },
+      {
+        placeholderData: keepPreviousData,
+        staleTime: 1000 * 60 * 1,
+        enabled: !isLazyLoading,
+      },
+    ),
   );
 
   if (

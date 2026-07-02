@@ -1,32 +1,38 @@
+import { ChevronRightIcon } from 'lucide-react';
+import Link from 'next/link';
 import { FeatureCard } from '@/components/feature-card';
-import { Section, SectionHeader, SectionLabel } from '@/components/section';
-import {
-  BarChart3Icon,
-  DollarSignIcon,
-  GlobeIcon,
-  ZapIcon,
-} from 'lucide-react';
-import { ProductAnalyticsIllustration } from './illustrations/product-analytics';
-import { WebAnalyticsIllustration } from './illustrations/web-analytics';
+import { NotificationsIllustration } from '@/components/illustrations/notifications';
+import { ProductAnalyticsIllustration } from '@/components/illustrations/product-analytics';
+import { RetentionIllustration } from '@/components/illustrations/retention';
+import { SessionReplayIllustration } from '@/components/illustrations/session-replay';
+import { WebAnalyticsIllustration } from '@/components/illustrations/web-analytics';
+import { Section, SectionHeader } from '@/components/section';
 
-const features = [
+function wrap(child: React.ReactNode) {
+  return <div className="h-48 overflow-hidden">{child}</div>;
+}
+
+const mediumFeatures = [
   {
-    title: 'Revenue tracking',
+    title: 'Retention',
     description:
-      'Track revenue from your payments and get insights into your revenue sources.',
-    icon: DollarSignIcon,
+      'Know how many users come back after day 1, day 7, day 30. Identify which behaviors predict long-term retention.',
+    illustration: wrap(<RetentionIllustration />),
+    link: { href: '/features/retention', children: 'View retention' },
   },
   {
-    title: 'Profiles & Sessions',
+    title: 'Session Replay',
     description:
-      'Track individual users and their complete journey across your platform.',
-    icon: GlobeIcon,
+      'Watch real user sessions to see exactly what happened — clicks, scrolls, rage clicks. Privacy controls built in.',
+    illustration: wrap(<SessionReplayIllustration />),
+    link: { href: '/features/session-replay', children: 'See session replay' },
   },
   {
-    title: 'Event Tracking',
+    title: 'Notifications',
     description:
-      'Capture every important interaction with flexible event tracking.',
-    icon: BarChart3Icon,
+      'Get notified when a funnel is completed. Stay on top of key moments in your product without watching dashboards all day.',
+    illustration: wrap(<NotificationsIllustration />),
+    link: { href: '/features/notifications', children: 'Set up notifications' },
   },
 ];
 
@@ -34,37 +40,49 @@ export function AnalyticsInsights() {
   return (
     <Section className="container">
       <SectionHeader
-        label="ANALYTICS & INSIGHTS"
-        title="See the full picture of your users and product performance"
-        description="Combine web and product analytics in one platform. Track visitors, events, revenue, and user journeys, all with privacy-first tracking."
         className="mb-16"
+        description="From first page view to long-term retention — every touchpoint in one platform. No sampling, no data limits, no guesswork."
+        label="ANALYTICS & INSIGHTS"
+        title="Everything you need to understand your users"
       />
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+
+      <div className="mb-6 grid grid-cols-1 gap-6 md:grid-cols-2">
         <FeatureCard
-          variant="large"
-          title="Web Analytics"
-          description="Understand your website performance with privacy-first analytics and clear, actionable insights."
-          illustration={<WebAnalyticsIllustration />}
           className="px-0 **:data-content:px-6"
+          description="Understand your website performance with privacy-first analytics. Track visitors, referrers, and page views without touching user cookies."
+          illustration={<WebAnalyticsIllustration />}
+          title="Web Analytics"
         />
         <FeatureCard
-          variant="large"
-          title="Product Analytics"
-          description="Turn raw data into clarity with real-time visualization of performance, behavior, and trends."
-          illustration={<ProductAnalyticsIllustration />}
           className="px-0 **:data-content:px-6"
+          description="Go beyond page views. Track custom events, understand user flows, and explore exactly how people use your product."
+          illustration={<ProductAnalyticsIllustration />}
+          title="Product Analytics"
         />
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {features.map((feature) => (
+
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+        {mediumFeatures.map((feature) => (
           <FeatureCard
-            key={feature.title}
-            title={feature.title}
+            className="px-0 pt-0 **:data-content:px-6"
             description={feature.description}
-            icon={feature.icon}
+            illustration={feature.illustration}
+            key={feature.title}
+            link={feature.link}
+            title={feature.title}
           />
         ))}
       </div>
+
+      <p className="mt-8 text-center">
+        <Link
+          className="inline-flex items-center gap-1 text-muted-foreground text-sm transition-colors hover:text-foreground"
+          href="/features"
+        >
+          Explore all features
+          <ChevronRightIcon className="size-3.5" />
+        </Link>
+      </p>
     </Section>
   );
 }

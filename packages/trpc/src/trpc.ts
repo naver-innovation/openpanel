@@ -2,7 +2,7 @@ import { TRPCError, initTRPC } from '@trpc/server';
 import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
 import { has } from 'ramda';
 import superjson from 'superjson';
-import { ZodError } from 'zod';
+import { ZodError, z } from 'zod';
 
 import { COOKIE_OPTIONS, type SessionValidationResult } from '@openpanel/auth';
 import { runWithAlsSession } from '@openpanel/db';
@@ -37,6 +37,7 @@ export async function createContext({ req, res }: CreateFastifyContextOptions) {
     // @ts-ignore
     res.setCookie(key, value, {
       maxAge: options.maxAge,
+      signed: options.signed,
       ...COOKIE_OPTIONS,
     });
   };
@@ -67,7 +68,7 @@ const t = initTRPC.context<Context>().create({
       data: {
         ...shape.data,
         zodError:
-          error.cause instanceof ZodError ? error.cause.flatten() : null,
+          error.cause instanceof ZodError ? z.flattenError(error.cause) : null,
       },
     };
   },
@@ -138,16 +139,21 @@ const loggerMiddleware = t.middleware(
     const rawInput = await getRawInput();
     // Only log mutations
     if (type === 'mutation') {
-      ctx.req.log.info('TRPC mutation', {
-        path,
-        rawInput,
-        input,
-        userId: ctx.session?.userId,
-        organizationId: has('organizationId', rawInput)
-          ? rawInput.organizationId
-          : undefined,
-        projectId: has('projectId', rawInput) ? rawInput.projectId : undefined,
-      });
+      ctx.req.log.info(
+        {
+          path,
+          rawInput,
+          input,
+          userId: ctx.session?.userId,
+          organizationId: has('organizationId', rawInput)
+            ? rawInput.organizationId
+            : undefined,
+          projectId: has('projectId', rawInput)
+            ? rawInput.projectId
+            : undefined,
+        },
+        'TRPC mutation',
+      );
     }
     return next();
   },

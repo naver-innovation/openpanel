@@ -1,11 +1,9 @@
-import { Readable } from 'node:stream';
 import type { ClickHouseSettings, ResponseJSON } from '@clickhouse/client';
 import { ClickHouseLogLevel, createClient } from '@clickhouse/client';
-import sqlstring from 'sqlstring';
-
 import type { NodeClickHouseClientConfigOptions } from '@clickhouse/client/dist/config';
 import { createLogger } from '@openpanel/logger';
 import type { IInterval } from '@openpanel/validation';
+import sqlstring from 'sqlstring';
 
 export { createClient };
 
@@ -25,25 +23,22 @@ type WarnLogParams = LogParams & { err?: Error };
 
 class CustomLogger implements Logger {
   trace({ message, args }: LogParams) {
-    logger.debug(message, args);
+    logger.debug({ args }, message);
   }
   debug({ message, args }: LogParams) {
     if (message.includes('Query:') && args?.response_status === 200) {
       return;
     }
-    logger.debug(message, args);
+    logger.debug({ args }, message);
   }
   info({ message, args }: LogParams) {
-    logger.info(message, args);
+    logger.info({ args }, message);
   }
   warn({ message, args }: WarnLogParams) {
-    logger.warn(message, args);
+    logger.warn({ args }, message);
   }
   error({ message, args, err }: ErrorLogParams) {
-    logger.error(message, {
-      ...args,
-      error: err,
-    });
+    logger.error({ err, args }, message);
   }
 }
 
@@ -59,6 +54,15 @@ export const TABLE_NAMES = {
   cohort_events_mv: 'cohort_events_mv',
   sessions: 'sessions',
   events_imports: 'events_imports',
+  session_replay_chunks: 'session_replay_chunks',
+  gsc_daily: 'gsc_daily',
+  gsc_pages_daily: 'gsc_pages_daily',
+  gsc_queries_daily: 'gsc_queries_daily',
+  groups: 'groups',
+  cohort_members: 'cohort_members',
+  cohort_metadata: 'cohort_metadata',
+  profile_event_summary_mv: 'profile_event_summary_mv',
+  profile_event_property_summary_mv: 'profile_event_property_summary_mv',
 };
 
 /**
@@ -67,6 +71,13 @@ export const TABLE_NAMES = {
  * Non-clustered mode = self-hosted environments
  */
 export function isClickhouseClustered(): boolean {
+  if (
+    process.env.CLICKHOUSE_CLUSTER === 'true' ||
+    process.env.CLICKHOUSE_CLUSTER === '1'
+  ) {
+    return true;
+  }
+
   return !(
     process.env.SELF_HOSTED === 'true' || process.env.SELF_HOSTED === '1'
   );
@@ -92,21 +103,21 @@ function getClickhouseSettings(): ClickHouseSettings {
   return {
     distributed_product_mode: 'allow',
     date_time_input_format: 'best_effort',
-    ...(!process.env.CLICKHOUSE_SETTINGS_REMOVE_CONVERT_ANY_JOIN
-      ? {
+    ...(process.env.CLICKHOUSE_SETTINGS_REMOVE_CONVERT_ANY_JOIN
+      ? {}
+      : {
           query_plan_convert_any_join_to_semi_or_anti_join: 0,
-        }
-      : {}),
+        }),
     ...additionalSettings,
   };
 }
 
 export const CLICKHOUSE_OPTIONS: NodeClickHouseClientConfigOptions = {
   max_open_connections: 30,
-  request_timeout: 300000,
+  request_timeout: 300_000,
   keep_alive: {
     enabled: true,
-    idle_socket_ttl: 60000,
+    idle_socket_ttl: 60_000,
   },
   compression: {
     request: true,
@@ -118,7 +129,7 @@ export const CLICKHOUSE_OPTIONS: NodeClickHouseClientConfigOptions = {
   },
 };
 
-logger.info('Clickhouse options', CLICKHOUSE_OPTIONS);
+logger.info({ options: CLICKHOUSE_OPTIONS }, 'Clickhouse options');
 
 export const originalCh = createClient({
   url: process.env.CLICKHOUSE_URL,
@@ -133,7 +144,7 @@ const cleanQuery = (query?: string) =>
 export async function withRetry<T>(
   operation: () => Promise<T>,
   maxRetries = 3,
-  baseDelay = 500,
+  baseDelay = 500
 ): Promise<T> {
   let lastError: Error | undefined;
 
@@ -141,7 +152,7 @@ export async function withRetry<T>(
     try {
       const res = await operation();
       if (attempt > 0) {
-        logger.info('Retry operation succeeded', { attempt });
+        logger.info({ attempt }, 'Retry operation succeeded');
       }
       return res;
     } catch (error: any) {
@@ -154,10 +165,8 @@ export async function withRetry<T>(
       ) {
         const delay = baseDelay * 2 ** attempt;
         logger.warn(
+          { err: error },
           `Attempt ${attempt + 1}/${maxRetries} failed, retrying in ${delay}ms`,
-          {
-            error: error.message,
-          },
         );
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
@@ -208,7 +217,7 @@ export const ch = new Proxy(originalCh, {
 
 export async function chQueryWithMeta<T extends Record<string, any>>(
   query: string,
-  clickhouseSettings?: ClickHouseSettings,
+  clickhouseSettings?: ClickHouseSettings
 ): Promise<ResponseJSON<T>> {
   const start = Date.now();
   const res = await ch.query({
@@ -233,55 +242,30 @@ export async function chQueryWithMeta<T extends Record<string, any>>(
     }),
   };
 
-  logger.info('query info', {
-    query: cleanQuery(query),
-    rows: json.rows,
-    stats: response.statistics,
-    elapsed: Date.now() - start,
-    clickhouseSettings,
-  });
+  logger.info(
+    {
+      query: cleanQuery(query),
+      rows: json.rows,
+      stats: response.statistics,
+      elapsed: Date.now() - start,
+      clickhouseSettings,
+    },
+    'query info',
+  );
 
   return response;
 }
 
-export async function chInsertCSV(tableName: string, rows: string[]) {
-  try {
-    const now = performance.now();
-    // Create a readable stream in binary mode for CSV (similar to EventBuffer)
-    const csvStream = Readable.from(rows.join('\n'), {
-      objectMode: false,
-    });
-
-    await ch.insert({
-      table: tableName,
-      values: csvStream,
-      format: 'CSV',
-      clickhouse_settings: {
-        format_csv_allow_double_quotes: 1,
-        format_csv_allow_single_quotes: 0,
-      },
-    });
-
-    logger.info('CSV Insert successful', {
-      elapsed: performance.now() - now,
-      rows: rows.length,
-    });
-  } catch (error) {
-    logger.error('CSV Insert failed:', error);
-    throw error;
-  }
-}
-
 export async function chQuery<T extends Record<string, any>>(
   query: string,
-  clickhouseSettings?: ClickHouseSettings,
+  clickhouseSettings?: ClickHouseSettings
 ): Promise<T[]> {
   return (await chQueryWithMeta<T>(query, clickhouseSettings)).data;
 }
 
 export function formatClickhouseDate(
   date: Date | string,
-  skipTime = false,
+  skipTime = false
 ): string {
   if (skipTime) {
     return new Date(date).toISOString().split('T')[0]!;
@@ -311,4 +295,17 @@ export function toDate(str: string, interval?: IInterval) {
 
 export function convertClickhouseDateToJs(date: string) {
   return new Date(`${date.replace(' ', 'T')}Z`);
+}
+
+const ROLLUP_DATE_PREFIX = '1970-01-01';
+export function isClickhouseDefaultMinDate(date: string): boolean {
+  return date.startsWith(ROLLUP_DATE_PREFIX) || date.startsWith('1969-12-31');
+}
+export function toNullIfDefaultMinDate(date?: string | null): Date | null {
+  if (!date) {
+    return null;
+  }
+  return isClickhouseDefaultMinDate(date)
+    ? null
+    : convertClickhouseDateToJs(date);
 }

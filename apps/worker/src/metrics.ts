@@ -1,12 +1,12 @@
-import client from 'prom-client';
-
 import {
   botBuffer,
   eventBuffer,
   profileBuffer,
+  replayBuffer,
   sessionBuffer,
 } from '@openpanel/db';
 import { cronQueue, eventsGroupQueues, sessionsQueue } from '@openpanel/queue';
+import client from 'prom-client';
 
 const Registry = client.Registry;
 
@@ -19,7 +19,7 @@ export const eventsGroupJobDuration = new client.Histogram({
   name: 'job_duration_ms',
   help: 'Duration of job processing (in ms)',
   labelNames: ['name', 'status'],
-  buckets: [10, 25, 50, 100, 250, 500, 750, 1000, 2000, 5000, 10000, 30000], // 10ms to 30s
+  buckets: [10, 25, 50, 100, 250, 500, 750, 1000, 2000, 5000, 10_000, 30_000], // 10ms to 30s
 });
 
 register.registerMetric(eventsGroupJobDuration);
@@ -27,57 +27,61 @@ register.registerMetric(eventsGroupJobDuration);
 queues.forEach((queue) => {
   register.registerMetric(
     new client.Gauge({
-      name: `${queue.name.replace(/[\{\}]/g, '')}_active_count`,
+      name: `${queue.name.replace(/[{}]/g, '')}_active_count`,
       help: 'Active count',
       async collect() {
         const metric = await queue.getActiveCount();
         this.set(metric);
       },
-    }),
+    })
   );
 
   register.registerMetric(
     new client.Gauge({
-      name: `${queue.name.replace(/[\{\}]/g, '')}_delayed_count`,
+      name: `${queue.name.replace(/[{}]/g, '')}_delayed_count`,
       help: 'Delayed count',
       async collect() {
-        const metric = await queue.getDelayedCount();
-        this.set(metric);
+        if ('getDelayedCount' in queue) {
+          const metric = await queue.getDelayedCount();
+          this.set(metric);
+        } else {
+          this.set(0);
+        }
       },
-    }),
+    })
   );
 
   register.registerMetric(
     new client.Gauge({
-      name: `${queue.name.replace(/[\{\}]/g, '')}_failed_count`,
+      name: `${queue.name.replace(/[{}]/g, '')}_failed_count`,
       help: 'Failed count',
       async collect() {
         const metric = await queue.getFailedCount();
         this.set(metric);
       },
-    }),
+    })
   );
 
   register.registerMetric(
     new client.Gauge({
-      name: `${queue.name.replace(/[\{\}]/g, '')}_completed_count`,
+      name: `${queue.name.replace(/[{}]/g, '')}_completed_count`,
       help: 'Completed count',
       async collect() {
         const metric = await queue.getCompletedCount();
         this.set(metric);
       },
-    }),
+    })
   );
 
   register.registerMetric(
     new client.Gauge({
-      name: `${queue.name.replace(/[\{\}]/g, '')}_waiting_count`,
+      name: `${queue.name.replace(/[{}]/g, '')}_waiting_count`,
       help: 'Waiting count',
       async collect() {
         const metric = await queue.getWaitingCount();
         this.set(metric);
       },
-    }),
+    })
   );
 });
 
@@ -89,7 +93,7 @@ register.registerMetric(
       const metric = await eventBuffer.getBufferSize();
       this.set(metric);
     },
-  }),
+  })
 );
 
 register.registerMetric(
@@ -100,7 +104,7 @@ register.registerMetric(
       const metric = await profileBuffer.getBufferSize();
       this.set(metric);
     },
-  }),
+  })
 );
 
 register.registerMetric(
@@ -111,7 +115,7 @@ register.registerMetric(
       const metric = await botBuffer.getBufferSize();
       this.set(metric);
     },
-  }),
+  })
 );
 
 register.registerMetric(
@@ -122,5 +126,16 @@ register.registerMetric(
       const metric = await sessionBuffer.getBufferSize();
       this.set(metric);
     },
-  }),
+  })
+);
+
+register.registerMetric(
+  new client.Gauge({
+    name: `buffer_${replayBuffer.name}_count`,
+    help: 'Number of unprocessed replay chunks',
+    async collect() {
+      const metric = await replayBuffer.getBufferSize();
+      this.set(metric);
+    },
+  })
 );

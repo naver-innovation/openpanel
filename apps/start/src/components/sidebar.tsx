@@ -1,11 +1,9 @@
-import { useAppContext } from '@/hooks/use-app-context';
-import { useTRPC } from '@/integrations/trpc/react';
-import { cn } from '@/utils/cn';
 import type { IServiceOrganization } from '@openpanel/db';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useLocation, useParams } from '@tanstack/react-router';
-import { MenuIcon, XIcon } from 'lucide-react';
+import { MenuIcon, SparklesIcon, XIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useChatState } from './chat/chat-context';
 import { FeedbackButton } from './feedback-button';
 import { LogoSquare } from './logo';
 import { ProfileToggle } from './profile-toggle';
@@ -17,6 +15,9 @@ import SidebarProjectMenu, {
   ActionCTAButton as ActionProjectCTAButton,
 } from './sidebar-project-menu';
 import { Button } from './ui/button';
+import { useAppContext } from '@/hooks/use-app-context';
+import { useTRPC } from '@/integrations/trpc/react';
+import { cn } from '@/utils/cn';
 
 export function Sidebar() {
   const { organizationId, projectId } = useParams({ strict: false });
@@ -24,7 +25,7 @@ export function Sidebar() {
 
   // Get organizations data
   const { data: organizations = [] } = useQuery(
-    trpc.organization.list.queryOptions(),
+    trpc.organization.list.queryOptions()
   );
 
   // Get projects data when we have an organization
@@ -78,6 +79,8 @@ export function SidebarContainer({
   const [active, setActive] = useState(false);
   const location = useLocation();
   const { isSelfHosted } = useAppContext();
+  const { projectId } = useParams({ strict: false });
+  const { isOpen: chatOpen, openChatForContext, closeChat } = useChatState();
 
   useEffect(() => {
     setActive(false);
@@ -86,66 +89,87 @@ export function SidebarContainer({
   return (
     <>
       <button
-        type="button"
-        onClick={() => setActive(false)}
         className={cn(
-          'fixed bottom-0 left-0 right-0 top-0 z-40 backdrop-blur-sm transition-opacity',
+          'fixed top-0 right-0 bottom-0 left-0 z-40 backdrop-blur-sm transition-opacity',
           active
             ? 'pointer-events-auto opacity-100'
-            : 'pointer-events-none opacity-0',
+            : 'pointer-events-none opacity-0'
         )}
+        onClick={() => setActive(false)}
+        type="button"
       />
       <div
         className={cn(
-          'fixed left-0 top-0 z-40 flex h-screen w-72 flex-col border-r border-border bg-card transition-transform',
+          'fixed top-0 left-0 z-40 flex h-screen w-72 flex-col border-border border-r bg-card transition-transform',
           '-translate-x-72 lg:-translate-x-0', // responsive
-          active && 'translate-x-0', // force active on mobile
+          active && 'translate-x-0' // force active on mobile
         )}
       >
         <div className="absolute -right-12 flex h-16 items-center lg:hidden">
           <Button
-            size="icon"
             onClick={() => setActive((p) => !p)}
+            size="icon"
             variant={'outline'}
           >
             {active ? <XIcon size={16} /> : <MenuIcon size={16} />}
           </Button>
         </div>
-        <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border px-4">
+        <div className="flex h-16 shrink-0 items-center gap-2 border-border border-b px-4">
           <Link to="/">
             <LogoSquare className="max-h-8" />
           </Link>
           <ProjectSelector
             align="start"
-            projects={projects}
             organizations={organizations}
+            projects={projects}
           />
         </div>
         <div
           className={cn([
-            'flex flex-grow col gap-1 overflow-auto p-4 hide-scrollbar',
+            'hide-scrollbar flex-1 overflow-auto p-4',
             "[&_a[data-status='active']]:bg-def-200",
           ])}
         >
           {children}
-
-          <div className="mt-auto w-full pt-6">
-            <div className="row gap-2 justify-between">
-              <FeedbackButton />
-              <ProfileToggle />
+        </div>
+        <div className="relative">
+          <div className="pointer-events-none absolute right-0 bottom-full left-0 h-8 bg-gradient-to-t from-card to-card/0" />
+          <div className="border-border border-t bg-card">
+            <div className="flex items-center">
+              <FeedbackButton className="h-12 flex-1 whitespace-nowrap rounded-none border-border border-r px-4 text-muted-foreground outline-0 hover:bg-accent hover:text-accent-foreground" />
+              <a
+                className="flex h-12 flex-1 items-center justify-center gap-2 border-border border-r font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+                href="https://openpanel.dev/docs"
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                Docs
+              </a>
+              {projectId && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    chatOpen ? closeChat() : openChatForContext()
+                  }
+                  className="flex h-12 w-12 items-center justify-center border-border border-r font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+                  title="Open AI chat (⌘J)"
+                  aria-label="Open AI chat"
+                >
+                  <SparklesIcon size={16} />
+                </button>
+              )}
+              <ProfileToggle className="h-12 flex-1 rounded-none hover:bg-accent hover:text-accent-foreground" />
             </div>
             {isSelfHosted && (
               <a
+                className="center-center flex h-12 cursor-pointer gap-2 border-border border-t px-4 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
                 href="https://openpanel.dev/supporter"
-                className="text-center text-sm w-full mt-2 border rounded p-2 font-medium block hover:underline hover:text-primary outline-none"
               >
-                Self-hosted instance, support us!
+                <span>Support Us</span>
+                <span>Pay What You Want</span>
               </a>
             )}
           </div>
-        </div>
-        <div className="fixed bottom-0 left-0 right-0 pointer-events-none">
-          <div className="h-8 w-full bg-gradient-to-t from-card to-card/0" />
         </div>
       </div>
     </>

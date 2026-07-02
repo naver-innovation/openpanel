@@ -13,7 +13,7 @@ import { useTRPC } from '@/integrations/trpc/react';
 import type { IChartData } from '@/trpc/client';
 import { cn } from '@/utils/cn';
 import { getProfileName } from '@/utils/getters';
-import type { IChartInput } from '@openpanel/validation';
+import type { IReportInput } from '@openpanel/validation';
 import { useQuery } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useEffect, useMemo, useState } from 'react';
@@ -25,7 +25,7 @@ const ProfileItem = ({ profile }: { profile: any }) => {
   return (
     <ProjectLink
       preload={false}
-      href={`/profiles/${profile.id}`}
+      href={`/profiles/${encodeURIComponent(profile.id)}`}
       title={getProfileName(profile, false)}
       className="col gap-2 rounded-lg border p-2 bg-card"
       onClick={(e) => {
@@ -152,7 +152,7 @@ function ProfileList({ profiles }: { profiles: any[] }) {
 // Chart-specific props and component
 interface ChartUsersViewProps {
   chartData: IChartData;
-  report: IChartInput;
+  report: IReportInput;
   date: string;
 }
 
@@ -279,11 +279,12 @@ function ChartUsersView({ chartData, report, date }: ChartUsersViewProps) {
 
 // Funnel-specific props and component
 interface FunnelUsersViewProps {
-  report: IChartInput;
+  report: IReportInput;
   stepIndex: number;
+  breakdownValues?: string[];
 }
 
-function FunnelUsersView({ report, stepIndex }: FunnelUsersViewProps) {
+function FunnelUsersView({ report, stepIndex, breakdownValues }: FunnelUsersViewProps) {
   const trpc = useTRPC();
   const [showDropoffs, setShowDropoffs] = useState(false);
 
@@ -297,9 +298,16 @@ function FunnelUsersView({ report, stepIndex }: FunnelUsersViewProps) {
         series: report.series,
         stepIndex: stepIndex,
         showDropoffs: showDropoffs,
-        funnelWindow: report.funnelWindow,
-        funnelGroup: report.funnelGroup,
+        funnelWindow:
+          report.options?.type === 'funnel'
+            ? report.options.funnelWindow
+            : undefined,
+        funnelGroup:
+          report.options?.type === 'funnel'
+            ? report.options.funnelGroup
+            : undefined,
         breakdowns: report.breakdowns,
+        breakdownValues: breakdownValues,
       },
       {
         enabled: stepIndex !== undefined,
@@ -371,20 +379,21 @@ type ViewChartUsersProps =
   | {
       type: 'chart';
       chartData: IChartData;
-      report: IChartInput;
+      report: IReportInput;
       date: string;
     }
   | {
       type: 'funnel';
-      report: IChartInput;
+      report: IReportInput;
       stepIndex: number;
+      breakdownValues?: string[];
     };
 
 // Main component that routes to the appropriate view
 export default function ViewChartUsers(props: ViewChartUsersProps) {
   if (props.type === 'funnel') {
     return (
-      <FunnelUsersView report={props.report} stepIndex={props.stepIndex} />
+      <FunnelUsersView report={props.report} stepIndex={props.stepIndex} breakdownValues={props.breakdownValues} />
     );
   }
 

@@ -5,19 +5,26 @@ import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import { ReportChartLoading } from '../common/loading';
-import { useReportChartContext } from '../context';
+import { useChartInput, useReportChartContext } from '../context';
 import { Chart } from './chart';
 
 export function ReportHistogramChart() {
-  const { isLazyLoading, report } = useReportChartContext();
+  const { isLazyLoading, shareId } = useReportChartContext();
+  const chartInput = useChartInput();
   const trpc = useTRPC();
 
   const res = useQuery(
-    trpc.chart.chart.queryOptions(report, {
-      placeholderData: keepPreviousData,
-      staleTime: 1000 * 60 * 1,
-      enabled: !isLazyLoading,
-    }),
+    trpc.chart.chart.queryOptions(
+      {
+        ...chartInput,
+        shareId,
+      },
+      {
+        placeholderData: keepPreviousData,
+        staleTime: 1000 * 60 * 1,
+        enabled: !isLazyLoading,
+      },
+    ),
   );
 
   if (
