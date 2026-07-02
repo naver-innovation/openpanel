@@ -1,4 +1,3 @@
-import Script from 'next/script';
 import Markdown from 'react-markdown';
 import {
   Accordion,
@@ -7,41 +6,58 @@ import {
   AccordionTrigger,
 } from './ui/accordion';
 
-export const Faqs = ({ children }: { children: React.ReactNode }) => (
-  <Accordion
-    type="single"
-    collapsible
-    className="w-full max-w-screen-md self-center border rounded-3xl [&_button]:px-4 bg-background-dark [&_div.answer]:bg-background-light"
+export const Faqs = ({
+  children,
+  schema = false,
+}: {
+  children: React.ReactNode;
+  schema?: boolean;
+}) => (
+  <div
+    {...(schema
+      ? { itemScope: true, itemType: 'https://schema.org/FAQPage' }
+      : {})}
   >
-    {children}
-  </Accordion>
+    <Accordion
+      className="w-full max-w-screen-md self-center rounded-3xl border bg-background-dark [&_button]:px-4 [&_div.answer]:bg-background-light"
+      collapsible
+      type="single"
+    >
+      {children}
+    </Accordion>
+  </div>
 );
 
 export const FaqItem = ({
   question,
   children,
-}: { question: string; children: string | React.ReactNode }) => (
+}: {
+  question: string;
+  children: string | React.ReactNode;
+}) => (
   <AccordionItem
-    value={question}
-    itemScope
-    itemProp="mainEntity"
-    itemType="https://schema.org/Question"
     className="[&_[role=region]]:px-4"
+    itemProp="mainEntity"
+    itemScope
+    itemType="https://schema.org/Question"
+    value={question}
   >
     <AccordionTrigger className="text-left" itemProp="name">
       {question}
     </AccordionTrigger>
     <AccordionContent
+      className="prose"
       itemProp="acceptedAnswer"
       itemScope
       itemType="https://schema.org/Answer"
-      className="prose"
     >
-      {typeof children === 'string' ? (
-        <Markdown>{children}</Markdown>
-      ) : (
-        children
-      )}
+      <div itemProp="text">
+        {typeof children === 'string' ? (
+          <Markdown>{children}</Markdown>
+        ) : (
+          children
+        )}
+      </div>
     </AccordionContent>
   </AccordionItem>
 );

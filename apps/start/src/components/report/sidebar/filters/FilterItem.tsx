@@ -1,20 +1,19 @@
 import { ColorSquare } from '@/components/color-square';
+import { FilterOperatorSelect } from '@/components/report/sidebar/filters/FilterOperatorSelect';
 import { RenderDots } from '@/components/ui/RenderDots';
 import { Button } from '@/components/ui/button';
 import { ComboboxAdvanced } from '@/components/ui/combobox-advanced';
-import { DropdownMenuComposed } from '@/components/ui/dropdown-menu';
 import { InputEnter } from '@/components/ui/input-enter';
 import { useAppParams } from '@/hooks/use-app-params';
 import { usePropertyValues } from '@/hooks/use-property-values';
 import { useDispatch } from '@/redux';
-import { operators } from '@openpanel/constants';
 import type {
   IChartEvent,
   IChartEventFilter,
   IChartEventFilterOperator,
   IChartEventFilterValue,
 } from '@openpanel/validation';
-import { mapKeys } from '@openpanel/validation';
+
 import { SlidersHorizontal, Trash } from 'lucide-react';
 import { changeEvent } from '../../reportSlice';
 
@@ -36,6 +35,7 @@ interface PureFilterProps {
     filter: IChartEventFilter,
   ) => void;
   className?: string;
+  immediateInput?: boolean;
 }
 
 export function FilterItem({ filter, event }: FilterProps) {
@@ -114,6 +114,7 @@ export function PureFilterItem({
   onChangeValue,
   onChangeOperator,
   className,
+  immediateInput,
 }: PureFilterProps) {
   const { projectId } = useAppParams();
 
@@ -155,18 +156,10 @@ export function PureFilterItem({
         </Button>
       </div>
       <div className="flex gap-1">
-        <DropdownMenuComposed
+        <FilterOperatorSelect
+          value={filter.operator}
           onChange={changeFilterOperator}
-          items={mapKeys(operators).map((key) => ({
-            value: key,
-            label: operators[key],
-          }))}
-          label="Operator"
-        >
-          <Button variant={'outline'} className="whitespace-nowrap">
-            {operators[filter.operator]}
-          </Button>
-        </DropdownMenuComposed>
+        />
         {filter.operator === 'is' || filter.operator === 'isNot' ? (
           <ComboboxAdvanced
             items={valuesCombobox}
@@ -179,6 +172,7 @@ export function PureFilterItem({
           <InputEnter
             value={filter.value[0] ? String(filter.value[0]) : ''}
             onChangeValue={(value) => changeFilterValue([value])}
+            immediate={immediateInput}
           />
         )}
       </div>

@@ -1,8 +1,7 @@
-import { FeatureCardContainer } from '@/components/feature-card';
+import { ArrowRightIcon } from 'lucide-react';
+import Link from 'next/link';
 import { Section, SectionHeader } from '@/components/section';
 import type { RelatedLinks } from '@/lib/compare';
-import { ArrowRightIcon, BookOpenIcon, GitCompareIcon } from 'lucide-react';
-import Link from 'next/link';
 
 interface RelatedLinksProps {
   relatedLinks?: RelatedLinks;
@@ -11,7 +10,7 @@ interface RelatedLinksProps {
 export function RelatedLinksSection({ relatedLinks }: RelatedLinksProps) {
   if (
     !relatedLinks ||
-    (!relatedLinks.articles?.length && !relatedLinks.alternatives?.length)
+    (!relatedLinks.guides?.length && !relatedLinks.articles?.length && !relatedLinks.alternatives?.length)
   ) {
     return null;
   }
@@ -19,59 +18,60 @@ export function RelatedLinksSection({ relatedLinks }: RelatedLinksProps) {
   return (
     <Section className="container">
       <SectionHeader
+        description="Explore more comparisons and guides to help you choose the right analytics tool."
         title="Related resources"
-        description="Explore more comparisons and guides to help you choose the right analytics tool"
         variant="sm"
       />
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-12">
-        {relatedLinks.articles && relatedLinks.articles.length > 0 && (
+      <div className="mt-12 grid gap-8 md:grid-cols-3">
+        {relatedLinks.guides && relatedLinks.guides.length > 0 && (
           <div className="col gap-4">
-            <div className="row gap-2 items-center mb-2">
-              <BookOpenIcon className="size-5 text-muted-foreground" />
-              <h3 className="text-lg font-semibold">Articles</h3>
-            </div>
-            <div className="col gap-3">
-              {relatedLinks.articles.map((article) => (
-                <Link key={article.url} href={article.url}>
-                  <FeatureCardContainer className="hover:border-primary/30 transition-colors">
-                    <div className="row gap-3 items-center">
-                      <div className="col gap-1 flex-1 min-w-0">
-                        <h4 className="text-base font-semibold group-hover:text-primary transition-colors">
-                          {article.title}
-                        </h4>
-                      </div>
-                      <ArrowRightIcon className="opacity-0 group-hover:opacity-100 size-4 shrink-0 text-muted-foreground group-hover:text-primary group-hover:translate-x-1 transition-all duration-300" />
-                    </div>
-                  </FeatureCardContainer>
-                </Link>
-              ))}
-            </div>
+            <h3 className="font-semibold text-muted-foreground text-sm uppercase tracking-wider">
+              Guides
+            </h3>
+            {relatedLinks.guides.map((guide) => (
+              <Link
+                className="row items-center gap-2 text-sm transition-colors hover:text-primary"
+                href={guide.url}
+                key={guide.url}
+              >
+                <ArrowRightIcon className="size-4 shrink-0" />
+                {guide.title}
+              </Link>
+            ))}
           </div>
         )}
-
+        {relatedLinks.articles && relatedLinks.articles.length > 0 && (
+          <div className="col gap-4">
+            <h3 className="font-semibold text-muted-foreground text-sm uppercase tracking-wider">
+              Articles
+            </h3>
+            {relatedLinks.articles.map((article) => (
+              <Link
+                className="row items-center gap-2 text-sm transition-colors hover:text-primary"
+                href={article.url}
+                key={article.url}
+              >
+                <ArrowRightIcon className="size-4 shrink-0" />
+                {article.title}
+              </Link>
+            ))}
+          </div>
+        )}
         {relatedLinks.alternatives && relatedLinks.alternatives.length > 0 && (
           <div className="col gap-4">
-            <div className="row gap-2 items-center mb-2">
-              <GitCompareIcon className="size-5 text-muted-foreground" />
-              <h3 className="text-lg font-semibold">Other comparisons</h3>
-            </div>
-            <div className="col gap-3">
-              {relatedLinks.alternatives.map((alternative) => (
-                <Link key={alternative.url} href={alternative.url}>
-                  <FeatureCardContainer className="hover:border-primary/30 transition-colors">
-                    <div className="row gap-3 items-center">
-                      <div className="col gap-1 flex-1 min-w-0">
-                        <h4 className="text-base font-semibold group-hover:text-primary transition-colors">
-                          {alternative.name} alternative
-                        </h4>
-                      </div>
-                      <ArrowRightIcon className="opacity-0 group-hover:opacity-100 size-4 shrink-0 text-muted-foreground group-hover:text-primary group-hover:translate-x-1 transition-all duration-300" />
-                    </div>
-                  </FeatureCardContainer>
-                </Link>
-              ))}
-            </div>
+            <h3 className="font-semibold text-muted-foreground text-sm uppercase tracking-wider">
+              Comparisons
+            </h3>
+            {relatedLinks.alternatives.map((alternative) => (
+              <Link
+                className="row items-center gap-2 text-sm transition-colors hover:text-primary"
+                href={alternative.url}
+                key={alternative.url}
+              >
+                <ArrowRightIcon className="size-4 shrink-0" />
+                {alternative.name} alternative
+              </Link>
+            ))}
           </div>
         )}
       </div>

@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 
 import { AnimatePresence } from 'framer-motion';
-import { RefreshCcwIcon } from 'lucide-react';
+import { CornerDownLeftIcon } from 'lucide-react';
 import { type InputHTMLAttributes, useEffect, useState } from 'react';
 import { Badge } from './badge';
 import { Input, type InputProps } from './input';
@@ -9,10 +9,12 @@ import { Input, type InputProps } from './input';
 export function InputEnter({
   value,
   onChangeValue,
+  immediate,
   ...props
 }: {
   value: string | undefined;
   onChangeValue: (value: string) => void;
+  immediate?: boolean;
 } & InputProps) {
   const [internalValue, setInternalValue] = useState(value ?? '');
 
@@ -27,7 +29,12 @@ export function InputEnter({
       <Input
         {...props}
         value={internalValue}
-        onChange={(e) => setInternalValue(e.target.value)}
+        onChange={(e) => {
+          setInternalValue(e.target.value);
+          if (immediate) {
+            onChangeValue(e.target.value);
+          }
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             onChangeValue(internalValue);
@@ -36,7 +43,7 @@ export function InputEnter({
       />
       <div className="absolute right-2 top-1/2 -translate-y-1/2">
         <AnimatePresence>
-          {internalValue !== value && (
+          {!immediate && internalValue !== value && (
             <motion.button
               key="refresh"
               initial={{ opacity: 0, scale: 0.8 }}
@@ -44,9 +51,12 @@ export function InputEnter({
               exit={{ opacity: 0, scale: 0.8 }}
               onClick={() => onChangeValue(internalValue)}
             >
-              <Badge variant="secondary">
-                Press enter
-                <RefreshCcwIcon className="ml-1 h-3 w-3" />
+              <Badge
+                variant="secondary"
+                className="gap-1 px-1.5 py-0 text-xs"
+              >
+                Press
+                <CornerDownLeftIcon className="h-3 w-3" />
               </Badge>
             </motion.button>
           )}

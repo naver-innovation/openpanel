@@ -1,24 +1,24 @@
+import { getSafeJson } from '@openpanel/json';
 import { cacheable } from '@openpanel/redis';
 import type { IChartEventFilter } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
 import {
-  TABLE_NAMES,
   ch,
   chQuery,
+  convertClickhouseDateToJs,
   formatClickhouseDate,
+  TABLE_NAMES,
 } from '../clickhouse/client';
 import { clix } from '../clickhouse/query-builder';
 import { createSqlBuilder } from '../sql-builder';
 import { getEventFiltersWhereClause } from './chart.service';
-import { getOrganizationByProjectIdCached } from './organization.service';
-import { type IServiceProfile, getProfilesCached } from './profile.service';
+import { getProfilesCached, type IServiceProfile } from './profile.service';
 
-export type IClickhouseSession = {
+export interface IClickhouseSession {
   id: string;
   profile_id: string;
   event_count: number;
   screen_view_count: number;
-  screen_views: string[];
   entry_path: string;
   entry_origin: string;
   exit_path: string;
@@ -52,7 +52,10 @@ export type IClickhouseSession = {
   revenue: number;
   sign: 1 | 0;
   version: number;
-};
+  // Dynamically added
+  has_replay?: boolean;
+  groups: string[];
+}
 
 export interface IServiceSession {
   id: string;
@@ -91,6 +94,8 @@ export interface IServiceSession {
   utmTerm: string;
   revenue: number;
   profile?: IServiceProfile;
+  hasReplay?: boolean;
+  groups: string[];
 }
 
 export interface GetSessionListOptions {
@@ -101,7 +106,12 @@ export interface GetSessionListOptions {
   startDate?: Date;
   endDate?: Date;
   search?: string;
-  cursor?: Cursor | null;
+  cursor?: Date;
+  minPageViews?: number | null;
+  maxPageViews?: number | null;
+  minEvents?: number | null;
+  maxEvents?: number | null;
+  dateIntervalInDays?: number;
 }
 
 export function transformSession(session: IClickhouseSession): IServiceSession {
@@ -114,8 +124,8 @@ export function transformSession(session: IClickhouseSession): IServiceSession {
     entryOrigin: session.entry_origin,
     exitPath: session.exit_path,
     exitOrigin: session.exit_origin,
-    createdAt: new Date(session.created_at),
-    endedAt: new Date(session.ended_at),
+    createdAt: convertClickhouseDateToJs(session.created_at),
+    endedAt: convertClickhouseDateToJs(session.ended_at),
     referrer: session.referrer,
     referrerName: session.referrer_name,
     referrerType: session.referrer_type,
@@ -142,42 +152,59 @@ export function transformSession(session: IClickhouseSession): IServiceSession {
     utmTerm: session.utm_term,
     revenue: session.revenue,
     profile: undefined,
+    hasReplay: session.has_replay,
+    groups: session.groups,
   };
 }
 
-type Direction = 'initial' | 'next' | 'prev';
+export async function getSessionList(options: GetSessionListOptions) {
+  const {
+    cursor,
+    take,
+    projectId,
+    profileId,
+    filters,
+    startDate,
+    endDate,
+    search,
+    minPageViews,
+    maxPageViews,
+    minEvents,
+    maxEvents,
+    dateIntervalInDays = 0.5,
+  } = options;
 
-type PageInfo = {
-  next?: Cursor; // use last row
-};
-
-type Cursor = {
-  createdAt: string; // ISO 8601 with ms
-  id: string;
-};
-
-export async function getSessionList({
-  cursor,
-  take,
-  projectId,
-  profileId,
-  filters,
-  startDate,
-  endDate,
-  search,
-}: GetSessionListOptions) {
   const { sb, getSql } = createSqlBuilder();
 
   sb.from = `${TABLE_NAMES.sessions} FINAL`;
   sb.limit = take;
   sb.where.projectId = `project_id = ${sqlstring.escape(projectId)}`;
 
-  if (startDate && endDate) {
-    sb.where.range = `created_at BETWEEN toDateTime('${formatClickhouseDate(startDate)}') AND toDateTime('${formatClickhouseDate(endDate)}')`;
+  const MAX_DATE_INTERVAL_IN_DAYS = 365;
+  // Cap the date interval to prevent infinity
+  const safeDateIntervalInDays = Math.min(
+    dateIntervalInDays,
+    MAX_DATE_INTERVAL_IN_DAYS
+  );
+
+  if (cursor instanceof Date) {
+    sb.where.cursorWindow = `created_at >= toDateTime64(${sqlstring.escape(formatClickhouseDate(cursor))}, 3) - INTERVAL ${safeDateIntervalInDays} DAY`;
+    sb.where.cursor = `created_at < ${sqlstring.escape(formatClickhouseDate(cursor))}`;
   }
 
-  if (profileId)
+  if (!(cursor || (startDate && endDate))) {
+    sb.where.cursorWindow = `created_at >= toDateTime64(${sqlstring.escape(formatClickhouseDate(new Date()))}, 3) - INTERVAL ${safeDateIntervalInDays} DAY`;
+  }
+
+  if (startDate && endDate) {
+    sb.where.created_at = `toDate(created_at) BETWEEN toDate('${formatClickhouseDate(startDate)}') AND toDate('${formatClickhouseDate(endDate)}')`;
+  }
+
+  sb.orderBy.created_at = 'created_at DESC';
+
+  if (profileId) {
     sb.where.profileId = `profile_id = ${sqlstring.escape(profileId)}`;
+  }
   if (search) {
     const s = sqlstring.escape(`%${search}%`);
     sb.where.search = `(entry_path ILIKE ${s} OR exit_path ILIKE ${s} OR referrer ILIKE ${s} OR referrer_name ILIKE ${s})`;
@@ -185,29 +212,19 @@ export async function getSessionList({
   if (filters?.length) {
     Object.assign(sb.where, getEventFiltersWhereClause(filters));
   }
-
-  const organization = await getOrganizationByProjectIdCached(projectId);
-  // This will speed up the query quite a lot for big organizations
-  const dateIntervalInDays =
-    organization?.subscriptionPeriodEventsLimit &&
-    organization?.subscriptionPeriodEventsLimit > 1_000_000
-      ? 1
-      : 360;
-
-  if (cursor) {
-    const cAt = sqlstring.escape(cursor.createdAt);
-    // TODO: remove id from cursor
-    const cId = sqlstring.escape(cursor.id);
-    sb.where.cursor = `created_at < toDateTime64(${cAt}, 3)`;
-    sb.where.cursorWindow = `created_at >= toDateTime64(${cAt}, 3) - INTERVAL ${dateIntervalInDays} DAY`;
-    sb.orderBy.created_at = 'created_at DESC';
-  } else {
-    sb.orderBy.created_at = 'created_at DESC';
-    sb.where.created_at = `created_at > now() - INTERVAL ${dateIntervalInDays} DAY`;
+  if (minPageViews != null) {
+    sb.where.minPageViews = `screen_view_count >= ${minPageViews}`;
+  }
+  if (maxPageViews != null) {
+    sb.where.maxPageViews = `screen_view_count <= ${maxPageViews}`;
+  }
+  if (minEvents != null) {
+    sb.where.minEvents = `event_count >= ${minEvents}`;
+  }
+  if (maxEvents != null) {
+    sb.where.maxEvents = `event_count <= ${maxEvents}`;
   }
 
-  // ==== Select columns (as you had) ====
-  // sb.select.id = 'id'; sb.select.project_id = 'project_id'; ... etc.
   const columns = [
     'created_at',
     'ended_at',
@@ -229,30 +246,35 @@ export async function getSessionList({
     'screen_view_count',
     'event_count',
     'revenue',
+    'groups',
   ];
 
   columns.forEach((column) => {
     sb.select[column] = column;
   });
 
+  sb.select.has_replay = `toBool(src.session_id != '') as hasReplay`;
+  sb.joins.has_replay = `LEFT JOIN (SELECT DISTINCT session_id FROM ${TABLE_NAMES.session_replay_chunks} WHERE project_id = ${sqlstring.escape(projectId)} AND started_at > now() - INTERVAL ${dateIntervalInDays} DAY) AS src ON src.session_id = id`;
+
   const sql = getSql();
   const data = await chQuery<
     IClickhouseSession & {
       latestCreatedAt: string;
+      hasReplay: boolean;
     }
   >(sql);
 
-  // Compute cursors from page edges
-  const last = data[take - 1];
-
-  const meta: PageInfo = {
-    next: last
-      ? {
-          createdAt: last.created_at,
-          id: last.id,
-        }
-      : undefined,
-  };
+  // If no results and we haven't reached the max window, retry with a larger interval
+  if (
+    data.length === 0 &&
+    sb.where.cursorWindow &&
+    safeDateIntervalInDays < MAX_DATE_INTERVAL_IN_DAYS
+  ) {
+    return getSessionList({
+      ...options,
+      dateIntervalInDays: dateIntervalInDays * 2,
+    });
+  }
 
   // Profile hydration (unchanged)
   const profileIds = data
@@ -273,8 +295,16 @@ export async function getSessionList({
       projectId,
       isExternal: false,
       properties: {},
+      groups: [],
     },
   }));
+
+  // Compute cursors from page edges
+  const last = items.at(-1);
+
+  const meta = {
+    next: last ? last.createdAt.toISOString() : undefined,
+  };
 
   return { items, meta };
 }
@@ -321,24 +351,186 @@ export async function getSessionsCount({
 
 export const getSessionsCountCached = cacheable(getSessionsCount, 60 * 10);
 
+export interface ISessionReplayChunkMeta {
+  chunk_index: number;
+  started_at: string;
+  ended_at: string;
+  events_count: number;
+  is_full_snapshot: boolean;
+}
+
+const REPLAY_CHUNKS_PAGE_SIZE = 40;
+
+export async function getSessionReplayChunksFrom(
+  sessionId: string,
+  projectId: string,
+  fromIndex: number
+) {
+  const rows = await chQuery<{ chunk_index: number; payload: string }>(
+    `SELECT chunk_index, payload
+     FROM ${TABLE_NAMES.session_replay_chunks}
+     WHERE session_id = ${sqlstring.escape(sessionId)}
+       AND project_id = ${sqlstring.escape(projectId)}
+     ORDER BY started_at, ended_at, chunk_index
+     LIMIT ${REPLAY_CHUNKS_PAGE_SIZE + 1}
+     OFFSET ${fromIndex}`
+  );
+
+  return {
+    data: rows
+      .slice(0, REPLAY_CHUNKS_PAGE_SIZE)
+      .map((row, index) => {
+        const events = getSafeJson<
+          { type: number; data: unknown; timestamp: number }[]
+        >(row.payload);
+        if (!events) {
+          return null;
+        }
+        return { chunkIndex: index + fromIndex, events };
+      })
+      .filter(Boolean),
+    hasMore: rows.length > REPLAY_CHUNKS_PAGE_SIZE,
+  };
+}
+
+export const SESSION_DISTINCT_FIELDS = [
+  'referrer_name',
+  'country',
+  'os',
+  'browser',
+  'device',
+] as const;
+
+export type SessionDistinctField = (typeof SESSION_DISTINCT_FIELDS)[number];
+
+export async function getSessionDistinctValues(
+  projectId: string,
+  field: SessionDistinctField,
+  limit = 200
+): Promise<string[]> {
+  const sql = `
+    SELECT ${field} AS value, count() AS cnt
+    FROM ${TABLE_NAMES.sessions}
+    WHERE project_id = ${sqlstring.escape(projectId)}
+      AND ${field} != ''
+      AND sign = 1
+      AND created_at > now() - INTERVAL 90 DAY
+    GROUP BY value
+    ORDER BY cnt DESC
+    LIMIT ${limit}
+  `;
+  const results = await chQuery<{ value: string }>(sql);
+  return results.map((r) => r.value).filter(Boolean);
+}
+
 class SessionService {
-  constructor(private client: typeof ch) {}
+  private readonly client: typeof ch;
+  constructor(client: typeof ch) {
+    this.client = client;
+  }
 
   async byId(sessionId: string, projectId: string) {
-    const result = await clix(this.client)
-      .select<IClickhouseSession>(['*'])
-      .from(TABLE_NAMES.sessions)
-      .where('id', '=', sessionId)
-      .where('project_id', '=', projectId)
-      .where('sign', '=', 1)
-      .execute();
+    const [sessionRows, hasReplayRows] = await Promise.all([
+      clix(this.client)
+        .select<IClickhouseSession>(['*'])
+        .from(TABLE_NAMES.sessions, true)
+        .where('id', '=', sessionId)
+        .where('project_id', '=', projectId)
+        .where('sign', '=', 1)
+        .execute(),
+      chQuery<{ n: number }>(
+        `SELECT 1 AS n
+         FROM ${TABLE_NAMES.session_replay_chunks}
+         WHERE session_id = ${sqlstring.escape(sessionId)}
+           AND project_id = ${sqlstring.escape(projectId)}
+         LIMIT 1`
+      ),
+    ]);
 
-    if (!result[0]) {
+    if (!sessionRows[0]) {
       throw new Error('Session not found');
     }
 
-    return transformSession(result[0]);
+    const session = transformSession(sessionRows[0]);
+
+    return {
+      ...session,
+      hasReplay: hasReplayRows.length > 0,
+    };
   }
 }
 
 export const sessionService = new SessionService(ch);
+
+import { resolveDateRange } from './date.service';
+
+export interface QuerySessionsInput {
+  projectId: string;
+  startDate?: string;
+  endDate?: string;
+  country?: string;
+  city?: string;
+  device?: string;
+  browser?: string;
+  os?: string;
+  referrer?: string;
+  referrerName?: string;
+  referrerType?: string;
+  profileId?: string;
+  limit?: number;
+}
+
+export async function querySessionsCore(
+  input: QuerySessionsInput,
+): Promise<IClickhouseSession[]> {
+  const builder = clix(ch)
+    .select<IClickhouseSession>([])
+    .from(TABLE_NAMES.sessions)
+    .where('project_id', '=', input.projectId)
+    .where('sign', '=', 1);
+
+  if (input.profileId) {
+    builder.where('profile_id', '=', input.profileId);
+  }
+
+  if (input.referrer) {
+    builder.where('referrer', '=', input.referrer);
+  }
+
+  if (input.referrerName) {
+    builder.where('referrer_name', '=', input.referrerName);
+  }
+
+  if (input.referrerType) {
+    builder.where('referrer_type', '=', input.referrerType);
+  }
+
+  if (input.device) {
+    builder.where('device', '=', input.device);
+  }
+
+  if (input.country) {
+    builder.where('country', '=', input.country);
+  }
+
+  if (input.city) {
+    builder.where('city', '=', input.city);
+  }
+
+  if (input.os) {
+    builder.where('os', '=', input.os);
+  }
+
+  if (input.browser) {
+    builder.where('browser', '=', input.browser);
+  }
+
+  const { startDate: start, endDate: end } = resolveDateRange(input.startDate, input.endDate);
+
+  builder.where('created_at', 'BETWEEN', [
+    clix.datetime(start),
+    clix.datetime(end),
+  ]);
+
+  return builder.limit(input.limit ?? 20).execute();
+}

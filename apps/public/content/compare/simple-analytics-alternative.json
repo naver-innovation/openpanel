@@ -2,12 +2,12 @@
   "slug": "simple-analytics-alternative",
   "page_type": "alternative",
   "seo": {
-    "title": "Simple Analytics Alternative: Why Teams Choose OpenPanel",
-    "description": "Compare OpenPanel vs Simple Analytics. Discover why teams choose OpenPanel as their Simple Analytics alternative for product analytics, user identification, and self-hosting while maintaining privacy-first principles.",
+    "title": "Best Simple Analytics Alternative 2026 - Open Source & Free",
+    "description": "Looking for a Simple Analytics alternative? OpenPanel adds product analytics, user identification, and self-hosting with longer data retention. Open source, privacy-first, and free to start.",
     "noindex": false
   },
   "hero": {
-    "heading": "Simple Analytics Alternative",
+    "heading": "Best Simple Analytics Alternative",
     "subheading": "Love Simple Analytics' privacy focus and clean dashboard? OpenPanel adds product analytics capabilities - funnels, cohorts, retention, and user identification - plus self-hosting options and longer data retention on the free tier.",
     "badges": [
       "Open-source",
@@ -23,6 +23,15 @@
     "short_description": "Privacy-focused web analytics with AI assistant, clean design, and Netherlands-based hosting.",
     "founded": 2018,
     "headquarters": "Amsterdam, Netherlands"
+  },
+  "overview": {
+    "title": "Why consider OpenPanel over Simple Analytics?",
+    "paragraphs": [
+      "Simple Analytics lives up to its name \u2014 it's a clean, privacy-focused web analytics tool based in the Netherlands with a thoughtful AI assistant feature. For teams that need basic traffic metrics with strong privacy guarantees, it does the job well. But its web-only focus and limited free tier (only 30 days of data retention) leave gaps for teams building products rather than content sites.",
+      "OpenPanel provides the same privacy-first foundation \u2014 cookie-free tracking, no consent banners, EU data processing \u2014 while adding the product analytics depth that Simple Analytics lacks. Funnels, retention analysis, cohort breakdowns, and individual user profiles let you understand not just traffic volume, but how users actually engage with your product over time.",
+      "Data retention on OpenPanel's free tier is particularly noteworthy. Where Simple Analytics limits free users to just 30 days of historical data, OpenPanel provides full data retention at every tier. Self-hosting is another differentiator \u2014 Simple Analytics is cloud-only, while OpenPanel can be deployed on your own infrastructure via Docker for complete data ownership.",
+      "If you've been happy with Simple Analytics' privacy approach but need deeper insights into user behavior, mobile app support through native SDKs, or longer data retention without upgrading to a paid plan, OpenPanel is a natural step up."
+    ]
   },
   "summary_comparison": {
     "title": "OpenPanel vs Simple Analytics: Which is right for you?",
@@ -464,6 +473,20 @@
     ]
   },
   "related_links": {
+    "guides": [
+      {
+        "title": "Website analytics setup",
+        "url": "/guides/website-analytics-setup"
+      },
+      {
+        "title": "Migrate from Google Analytics",
+        "url": "/guides/migrate-from-google-analytics"
+      },
+      {
+        "title": "Next.js analytics setup",
+        "url": "/guides/nextjs-analytics"
+      }
+    ],
     "articles": [
       {
         "title": "9 best open source web analytics tools",

@@ -1,36 +1,50 @@
+import { zTrackHandlerPayload } from '@openpanel/validation';
+import type { FastifyPluginAsyncZodOpenApi } from 'fastify-zod-openapi';
+import { z } from 'zod';
 import { fetchDeviceId, handler } from '@/controllers/track.controller';
-import type { FastifyPluginCallback } from 'fastify';
-
 import { clientHook } from '@/hooks/client.hook';
 import { duplicateHook } from '@/hooks/duplicate.hook';
 import { isBotHook } from '@/hooks/is-bot.hook';
 
-const trackRouter: FastifyPluginCallback = async (fastify) => {
+const trackRouter: FastifyPluginAsyncZodOpenApi = async (fastify) => {
   fastify.addHook('preValidation', duplicateHook);
   fastify.addHook('preHandler', clientHook);
   fastify.addHook('preHandler', isBotHook);
 
-  fastify.route({
+  await fastify.route({
     method: 'POST',
     url: '/',
-    handler: handler,
-  });
-
-  fastify.route({
-    method: 'GET',
-    url: '/device-id',
-    handler: fetchDeviceId,
     schema: {
+      body: zTrackHandlerPayload,
+      tags: ['Track'],
+      description:
+        'Ingest a tracking event (track, identify, group, increment, decrement, replay).',
       response: {
-        200: {
-          type: 'object',
-          properties: {
-            deviceId: { type: 'string' },
-            message: { type: 'string', optional: true },
-          },
-        },
+        200: z.object({
+          deviceId: z.string(),
+          sessionId: z.string(),
+        }),
       },
     },
+    handler,
+  });
+
+  await fastify.route({
+    method: 'GET',
+    url: '/device-id',
+    schema: {
+      tags: ['Track'],
+      description:
+        'Get or generate a stable device ID and session ID for the current visitor.',
+      response: {
+        200: z.object({
+          deviceId: z.string(),
+          sessionId: z.string(),
+          message: z.string().optional(),
+        }),
+      },
+    },
+    handler: fetchDeviceId,
   });
 };
 

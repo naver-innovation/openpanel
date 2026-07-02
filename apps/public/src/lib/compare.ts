@@ -165,8 +165,14 @@ export interface RelatedLink {
 }
 
 export interface RelatedLinks {
+  guides?: RelatedLink[];
   articles?: RelatedLink[];
   alternatives?: RelatedLink[];
+}
+
+export interface CompareOverview {
+  title: string;
+  paragraphs: string[];
 }
 
 export interface CompareData {
@@ -176,6 +182,7 @@ export interface CompareData {
   seo: CompareSeo;
   hero: CompareHero;
   competitor: CompareCompetitor;
+  overview?: CompareOverview;
   summary_comparison: CompareSummary;
   highlights: CompareHighlights;
   feature_comparison: CompareFeatureComparison;

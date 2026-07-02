@@ -1,11 +1,12 @@
-import type { Queue, WorkerOptions } from 'bullmq';
-import { Worker } from 'bullmq';
-
+import { performance } from 'node:perf_hooks';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  cohortComputeQueue,
+  cronQueue,
   EVENTS_GROUP_QUEUES_SHARDS,
   type EventsQueuePayloadIncomingEvent,
-  cronQueue,
   eventsGroupQueues,
+  gscQueue,
   importQueue,
   insightsQueue,
   miscQueue,
@@ -14,19 +15,24 @@ import {
   sessionsQueue,
 } from '@openpanel/queue';
 import { getRedisQueue } from '@openpanel/redis';
-
-import { performance } from 'node:perf_hooks';
-import { setTimeout as sleep } from 'node:timers/promises';
+import type { Queue, WorkerOptions } from 'bullmq';
+import { Worker } from 'bullmq';
 import { Worker as GroupWorker } from 'groupmq';
-
+import { cohortComputeJob } from './jobs/cohort.compute';
 import { cronJob } from './jobs/cron';
 import { incomingEvent } from './jobs/events.incoming-event';
+import { gscJob } from './jobs/gsc';
 import { importJob } from './jobs/import';
 import { insightsProjectJob } from './jobs/insights';
 import { miscJob } from './jobs/misc';
 import { notificationJob } from './jobs/notification';
 import { sessionsJob } from './jobs/sessions';
 import { eventsGroupJobDuration } from './metrics';
+import { setShuttingDown } from './utils/graceful-shutdown';
+import {
+  enableEventsHeartbeat,
+  markEventsActivity,
+} from './utils/worker-heartbeat';
 import { logger } from './utils/logger';
 
 const workerOptions: WorkerOptions = {
@@ -48,9 +54,10 @@ function getEnabledQueues(): QueueName[] {
   const enabledQueuesEnv = process.env.ENABLED_QUEUES?.trim();
 
   if (!enabledQueuesEnv) {
-    logger.info('No ENABLED_QUEUES specified, starting all queues', {
-      totalEventShards: EVENTS_GROUP_QUEUES_SHARDS,
-    });
+    logger.info(
+      { totalEventShards: EVENTS_GROUP_QUEUES_SHARDS },
+      'No ENABLED_QUEUES specified, starting all queues',
+    );
     return [
       'events',
       'sessions',
@@ -59,6 +66,8 @@ function getEnabledQueues(): QueueName[] {
       'misc',
       'import',
       'insights',
+      'gsc',
+      'cohortCompute',
     ];
   }
 
@@ -67,10 +76,10 @@ function getEnabledQueues(): QueueName[] {
     .map((q) => q.trim())
     .filter(Boolean);
 
-  logger.info('Starting queues from ENABLED_QUEUES', {
-    queues,
-    totalEventShards: EVENTS_GROUP_QUEUES_SHARDS,
-  });
+  logger.info(
+    { queues, totalEventShards: EVENTS_GROUP_QUEUES_SHARDS },
+    'Starting queues from ENABLED_QUEUES',
+  );
   return queues;
 }
 
@@ -92,7 +101,7 @@ function getConcurrencyFor(queueName: string, defaultValue = 1): number {
   return defaultValue;
 }
 
-export async function bootWorkers() {
+export function bootWorkers() {
   const enabledQueues = getEnabledQueues();
 
   const workers: (Worker | GroupWorker<any>)[] = [];
@@ -114,14 +123,20 @@ export async function bootWorkers() {
     }
   }
 
+  if (eventQueuesToStart.length > 0) {
+    enableEventsHeartbeat();
+  }
+
   for (const index of eventQueuesToStart) {
     const queue = eventsGroupQueues[index];
-    if (!queue) continue;
+    if (!queue) {
+      continue;
+    }
 
     const queueName = `events_${index}`;
     const concurrency = getConcurrencyFor(
       queueName,
-      Number.parseInt(process.env.EVENT_JOB_CONCURRENCY || '10', 10),
+      Number.parseInt(process.env.EVENT_JOB_CONCURRENCY || '10', 10)
     );
 
     const worker = new GroupWorker<EventsQueuePayloadIncomingEvent['payload']>({
@@ -129,16 +144,23 @@ export async function bootWorkers() {
       concurrency,
       logger: process.env.NODE_ENV === 'production' ? queueLogger : undefined,
       blockingTimeoutSec: Number.parseFloat(
-        process.env.EVENT_BLOCKING_TIMEOUT_SEC || '1',
+        process.env.EVENT_BLOCKING_TIMEOUT_SEC || '1'
       ),
       handler: async (job) => {
         return await incomingEvent(job.data);
       },
     });
 
+    // Consumer-loop heartbeat for the readiness probe. `completed` fires after
+    // each processed job; `drained` fires on each poll cycle that finds the
+    // queue empty. Together they refresh the timestamp every poll cycle while
+    // the consumer is alive — busy or idle.
+    worker.on('completed', markEventsActivity);
+    worker.on('drained', markEventsActivity);
+
     worker.run();
     workers.push(worker);
-    logger.info(`Started worker for ${queueName}`, { concurrency });
+    logger.info({ concurrency }, `Started worker for ${queueName}`);
   }
 
   // Start sessions worker
@@ -149,7 +171,7 @@ export async function bootWorkers() {
       concurrency,
     });
     workers.push(sessionsWorker);
-    logger.info('Started worker for sessions', { concurrency });
+    logger.info({ concurrency }, 'Started worker for sessions');
   }
 
   // Start cron worker
@@ -160,7 +182,7 @@ export async function bootWorkers() {
       concurrency,
     });
     workers.push(cronWorker);
-    logger.info('Started worker for cron', { concurrency });
+    logger.info({ concurrency }, 'Started worker for cron');
   }
 
   // Start notification worker
@@ -169,10 +191,10 @@ export async function bootWorkers() {
     const notificationWorker = new Worker(
       notificationQueue.name,
       notificationJob,
-      { ...workerOptions, concurrency },
+      { ...workerOptions, concurrency }
     );
     workers.push(notificationWorker);
-    logger.info('Started worker for notification', { concurrency });
+    logger.info({ concurrency }, 'Started worker for notification');
   }
 
   // Start misc worker
@@ -183,7 +205,7 @@ export async function bootWorkers() {
       concurrency,
     });
     workers.push(miscWorker);
-    logger.info('Started worker for misc', { concurrency });
+    logger.info({ concurrency }, 'Started worker for misc');
   }
 
   // Start import worker
@@ -194,7 +216,7 @@ export async function bootWorkers() {
       concurrency,
     });
     workers.push(importWorker);
-    logger.info('Started worker for import', { concurrency });
+    logger.info({ concurrency }, 'Started worker for import');
   }
 
   // Start insights worker
@@ -205,33 +227,52 @@ export async function bootWorkers() {
       concurrency,
     });
     workers.push(insightsWorker);
-    logger.info('Started worker for insights', { concurrency });
+    logger.info({ concurrency }, 'Started worker for insights');
+  }
+
+  // Start gsc worker
+  if (enabledQueues.includes('gsc')) {
+    const concurrency = getConcurrencyFor('gsc', 5);
+    const gscWorker = new Worker(gscQueue.name, gscJob, {
+      ...workerOptions,
+      concurrency,
+    });
+    workers.push(gscWorker);
+    logger.info({ concurrency }, 'Started worker for gsc');
+  }
+
+  // Start cohortCompute worker
+  if (enabledQueues.includes('cohortCompute')) {
+    const concurrency = getConcurrencyFor('cohortCompute', 2);
+    const cohortComputeWorker = new Worker(
+      cohortComputeQueue.name,
+      cohortComputeJob,
+      {
+        ...workerOptions,
+        concurrency,
+      },
+    );
+    workers.push(cohortComputeWorker);
+    logger.info({ concurrency }, 'Started worker for cohortCompute');
   }
 
   if (workers.length === 0) {
     logger.warn(
-      'No workers started. Check ENABLED_QUEUES environment variable.',
+      'No workers started. Check ENABLED_QUEUES environment variable.'
     );
   }
 
   workers.forEach((worker) => {
     (worker as Worker).on('error', (error) => {
-      logger.error('worker error', {
-        worker: worker.name,
-        error,
-      });
+      logger.error({ err: error, worker: worker.name }, 'worker error');
     });
 
     (worker as Worker).on('closed', () => {
-      logger.info('worker closed', {
-        worker: worker.name,
-      });
+      logger.info({ worker: worker.name }, 'worker closed');
     });
 
     (worker as Worker).on('ready', () => {
-      logger.info('worker ready', {
-        worker: worker.name,
-      });
+      logger.info({ worker: worker.name }, 'worker ready');
     });
 
     (worker as Worker).on('failed', (job) => {
@@ -240,51 +281,46 @@ export async function bootWorkers() {
           const elapsed = job.finishedOn - job.processedOn;
           eventsGroupJobDuration.observe(
             { name: worker.name, status: 'failed' },
-            elapsed,
+            elapsed
           );
         }
-        logger.error('job failed', {
-          jobId: job.id,
-          worker: worker.name,
-          data: job.data,
-          error: job.failedReason,
-          options: job.opts,
-        });
-      }
-    });
-
-    (worker as Worker).on('completed', (job) => {
-      if (job) {
-        if (job.processedOn && job.finishedOn) {
-          const elapsed = job.finishedOn - job.processedOn;
-          logger.info('job completed', {
+        logger.error(
+          {
             jobId: job.id,
             worker: worker.name,
-            elapsed,
-          });
-          eventsGroupJobDuration.observe(
-            { name: worker.name, status: 'success' },
-            elapsed,
-          );
-        }
+            data: job.data,
+            failedReason: job.failedReason,
+            options: job.opts,
+          },
+          'job failed',
+        );
       }
     });
 
     (worker as Worker).on('ioredis:close', () => {
-      logger.error('worker closed due to ioredis:close', {
-        worker: worker.name,
-      });
+      logger.error(
+        { worker: worker.name },
+        'worker closed due to ioredis:close',
+      );
     });
   });
 
   async function exitHandler(
     eventName: string,
-    evtOrExitCodeOrError: number | string | Error,
+    evtOrExitCodeOrError: number | string | Error
   ) {
-    logger.info('Starting graceful shutdown', {
-      code: evtOrExitCodeOrError,
-      eventName,
-    });
+    // Log the actual error details for unhandled rejections/exceptions
+    if (evtOrExitCodeOrError instanceof Error) {
+      logger.error(
+        { err: evtOrExitCodeOrError, eventName },
+        'Unhandled error triggered shutdown',
+      );
+    } else {
+      logger.info(
+        { code: evtOrExitCodeOrError, eventName },
+        'Starting graceful shutdown',
+      );
+    }
     try {
       const time = performance.now();
 
@@ -295,14 +331,15 @@ export async function bootWorkers() {
 
       await Promise.all(workers.map((worker) => worker.close()));
 
-      logger.info('workers closed successfully', {
-        elapsed: performance.now() - time,
-      });
+      logger.info(
+        { elapsed: performance.now() - time },
+        'workers closed successfully',
+      );
     } catch (e) {
-      logger.error('exit handler error', {
-        code: evtOrExitCodeOrError,
-        error: e,
-      });
+      logger.error(
+        { err: e, code: evtOrExitCodeOrError },
+        'exit handler error',
+      );
     }
     const exitCode = Number.isNaN(+evtOrExitCodeOrError)
       ? 1
@@ -313,9 +350,10 @@ export async function bootWorkers() {
   ['uncaughtException', 'unhandledRejection', 'SIGTERM', 'SIGINT'].forEach(
     (evt) => {
       process.on(evt, (code) => {
+        setShuttingDown(true);
         exitHandler(evt, code);
       });
-    },
+    }
   );
 
   return workers;
@@ -332,17 +370,17 @@ export async function waitForQueueToEmpty(queue: Queue, timeout = 60_000) {
     }
 
     if (performance.now() - startTime > timeout) {
-      logger.warn('Timeout reached while waiting for queue to empty', {
-        queue: queue.name,
-        remainingCount: activeCount,
-      });
+      logger.warn(
+        { queue: queue.name, remainingCount: activeCount },
+        'Timeout reached while waiting for queue to empty',
+      );
       break;
     }
 
-    logger.info('Waiting for queue to finish', {
-      queue: queue.name,
-      count: activeCount,
-    });
+    logger.info(
+      { queue: queue.name, count: activeCount },
+      'Waiting for queue to finish',
+    );
     await sleep(500);
   }
 }

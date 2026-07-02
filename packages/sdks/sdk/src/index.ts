@@ -1,6 +1,10 @@
+/** biome-ignore-all lint/style/noExportedImports: lazy */
+
 import type {
   IAliasPayload as AliasPayload,
+  IAssignGroupPayload as AssignGroupPayload,
   IDecrementPayload as DecrementPayload,
+  IGroupPayload as GroupPayload,
   IIdentifyPayload as IdentifyPayload,
   IIncrementPayload as IncrementPayload,
   ITrackHandlerPayload as TrackHandlerPayload,
@@ -10,37 +14,53 @@ import { Api } from './api';
 
 export type {
   AliasPayload,
+  AssignGroupPayload,
   DecrementPayload,
+  GroupPayload,
   IdentifyPayload,
   IncrementPayload,
   TrackHandlerPayload,
   TrackPayload,
 };
 
-export type TrackProperties = {
+export interface TrackProperties {
   [key: string]: unknown;
   profileId?: string;
-};
+  groups?: string[];
+}
 
-export type OpenPanelOptions = {
+export type UpsertGroupPayload = GroupPayload;
+
+export interface OpenPanelOptions {
   clientId: string;
   clientSecret?: string;
   apiUrl?: string;
   sdk?: string;
   sdkVersion?: string;
+  /**
+   * @deprecated Queue events until `identify()` is called with a profileId.
+   * For manual queue control use `disabled: true` + `ready()` instead.
+   */
   waitForProfile?: boolean;
   filter?: (payload: TrackHandlerPayload) => boolean;
+  /** When true, events are queued until `ready()` is called (same as waitForProfile). */
   disabled?: boolean;
   debug?: boolean;
-};
+}
 
 export class OpenPanel {
   api: Api;
-  profileId?: string;
+  options: OpenPanelOptions;
+  profileId?: string | number;
+  groups: string[] = [];
+  deviceId?: string;
+  sessionId?: string;
   global?: Record<string, unknown>;
   queue: TrackHandlerPayload[] = [];
 
-  constructor(public options: OpenPanelOptions) {
+  constructor(options: OpenPanelOptions) {
+    this.options = options;
+
     const defaultHeaders: Record<string, string> = {
       'openpanel-client-id': options.clientId,
     };
@@ -65,24 +85,60 @@ export class OpenPanel {
   }
 
   ready() {
+    this.options.disabled = false;
     this.options.waitForProfile = false;
     this.flush();
   }
 
-  async send(payload: TrackHandlerPayload) {
+  private shouldQueue(payload: TrackHandlerPayload): boolean {
     if (this.options.disabled) {
-      return Promise.resolve();
+      return true;
+    }
+    if (this.options.waitForProfile && !this.profileId) {
+      return true;
+    }
+    if (payload.type === 'replay' && !this.sessionId) {
+      return true;
+    }
+    return false;
+  }
+
+  addQueue(payload: TrackHandlerPayload) {
+    if (payload.type === 'track') {
+      payload.payload.properties = {
+        ...(payload.payload.properties ?? {}),
+        __timestamp: new Date().toISOString(),
+      };
     }
 
+    this.queue.push(payload);
+  }
+
+  async send(payload: TrackHandlerPayload) {
     if (this.options.filter && !this.options.filter(payload)) {
       return Promise.resolve();
     }
 
-    if (this.options.waitForProfile && !this.profileId) {
-      this.queue.push(payload);
+    if (this.shouldQueue(payload)) {
+      this.addQueue(payload);
       return Promise.resolve();
     }
-    return this.api.fetch('/track', payload);
+
+    // Disable keepalive for replay since it has a hard body limit and breaks the request
+    const result = await this.api.fetch<
+      TrackHandlerPayload,
+      { deviceId: string; sessionId: string }
+    >('/track', payload, { keepalive: payload.type !== 'replay' });
+    this.deviceId = result?.deviceId;
+    const hadSession = !!this.sessionId;
+    this.sessionId = result?.sessionId;
+
+    // Flush queued items (e.g. replay chunks) when sessionId first arrives
+    if (!hadSession && this.sessionId) {
+      this.flush();
+    }
+
+    return result;
   }
 
   setGlobalProperties(properties: Record<string, unknown>) {
@@ -92,29 +148,34 @@ export class OpenPanel {
     };
   }
 
-  async track(name: string, properties?: TrackProperties) {
+  track(name: string, properties?: TrackProperties) {
     this.log('track event', name, properties);
+    const { groups: groupsOverride, profileId, ...rest } = properties ?? {};
+    const mergedGroups = [
+      ...new Set([...this.groups, ...(groupsOverride ?? [])]),
+    ];
     return this.send({
       type: 'track',
       payload: {
         name,
-        profileId: properties?.profileId ?? this.profileId,
+        profileId: profileId ?? this.profileId,
+        groups: mergedGroups.length > 0 ? mergedGroups : undefined,
         properties: {
           ...(this.global ?? {}),
-          ...(properties ?? {}),
+          ...rest,
         },
       },
     });
   }
 
-  async identify(payload: IdentifyPayload) {
+  identify(payload: IdentifyPayload) {
     this.log('identify user', payload);
     if (payload.profileId) {
-      this.profileId = payload.profileId;
+      this.profileId = payload.profileId
       this.flush();
     }
 
-    if (Object.keys(payload).length > 1) {
+    if (payload.profileId && Object.keys(payload).length > 1) {
       return this.send({
         type: 'identify',
         payload: {
@@ -128,28 +189,64 @@ export class OpenPanel {
     }
   }
 
+  upsertGroup(payload: UpsertGroupPayload) {
+    this.log('upsert group', payload);
+    return this.send({
+      type: 'group',
+      payload,
+    });
+  }
+
+  setGroup(groupId: string) {
+    this.log('set group', groupId);
+    if (!this.groups.includes(groupId)) {
+      this.groups = [...this.groups, groupId];
+    }
+    return this.send({
+      type: 'assign_group',
+      payload: {
+        groupIds: [groupId],
+        profileId: this.profileId,
+      },
+    });
+  }
+
+  setGroups(groupIds: string[]) {
+    this.log('set groups', groupIds);
+    this.groups = [...new Set([...this.groups, ...groupIds])];
+    return this.send({
+      type: 'assign_group',
+      payload: {
+        groupIds,
+        profileId: this.profileId,
+      },
+    });
+  }
+
   /**
    * @deprecated This method is deprecated and will be removed in a future version.
    */
-  async alias(payload: AliasPayload) {}
+  alias(_payload: AliasPayload) {
+    // noop
+  }
 
-  async increment(payload: IncrementPayload) {
+  increment(payload: IncrementPayload) {
     return this.send({
       type: 'increment',
       payload,
     });
   }
 
-  async decrement(payload: DecrementPayload) {
+  decrement(payload: DecrementPayload) {
     return this.send({
       type: 'decrement',
       payload,
     });
   }
 
-  async revenue(
+  revenue(
     amount: number,
-    properties?: TrackProperties & { deviceId?: string },
+    properties?: TrackProperties & { deviceId?: string }
   ) {
     const deviceId = properties?.deviceId;
     delete properties?.deviceId;
@@ -160,33 +257,74 @@ export class OpenPanel {
     });
   }
 
-  async fetchDeviceId(): Promise<string> {
-    const result = await this.api.fetch<undefined, { deviceId: string }>(
-      '/track/device-id',
-      undefined,
-      { method: 'GET', keepalive: false },
-    );
-    return result?.deviceId ?? '';
+  getDeviceId(): string {
+    return this.deviceId ?? '';
+  }
+
+  getSessionId(): string {
+    return this.sessionId ?? '';
+  }
+
+  /**
+   * @deprecated Use `getDeviceId()` instead. This async method is no longer needed.
+   */
+  fetchDeviceId(): Promise<string> {
+    return Promise.resolve(this.deviceId ?? '');
   }
 
   clear() {
     this.profileId = undefined;
-    // should we force a session end here?
+    this.groups = [];
+    this.deviceId = undefined;
+    this.sessionId = undefined;
+  }
+
+  private buildFlushPayload(
+    item: TrackHandlerPayload
+  ): TrackHandlerPayload['payload'] {
+    if (item.type === 'replay') {
+      return item.payload;
+    }
+    if (item.type === 'track') {
+      const queuedGroups =
+        'groups' in item.payload ? (item.payload.groups ?? []) : [];
+      const mergedGroups = [...new Set([...this.groups, ...queuedGroups])];
+      return {
+        ...item.payload,
+        profileId: item.payload.profileId ?? this.profileId,
+        groups: mergedGroups.length > 0 ? mergedGroups : undefined,
+      };
+    }
+    if (
+      item.type === 'identify' ||
+      item.type === 'increment' ||
+      item.type === 'decrement'
+    ) {
+      return {
+        ...item.payload,
+        profileId: item.payload.profileId ?? this.profileId,
+      } as TrackHandlerPayload['payload'];
+    }
+    if (item.type === 'assign_group') {
+      return {
+        ...item.payload,
+        profileId: item.payload.profileId ?? this.profileId,
+      };
+    }
+    return item.payload;
   }
 
   flush() {
-    this.queue.forEach((item) => {
-      this.send({
-        ...item,
-        // Not sure why ts-expect-error is needed here
-        // @ts-expect-error
-        payload: {
-          ...item.payload,
-          profileId: item.payload.profileId ?? this.profileId,
-        },
-      });
-    });
-    this.queue = [];
+    const remaining: TrackHandlerPayload[] = [];
+    for (const item of this.queue) {
+      if (this.shouldQueue(item)) {
+        remaining.push(item);
+        continue;
+      }
+      const payload = this.buildFlushPayload(item);
+      this.send({ ...item, payload } as TrackHandlerPayload);
+    }
+    this.queue = remaining;
   }
 
   log(...args: any[]) {

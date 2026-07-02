@@ -1,14 +1,3 @@
-import AnimateHeight from '@/components/animate-height';
-import { ButtonContainer } from '@/components/button-container';
-import { CheckboxItem } from '@/components/forms/checkbox-item';
-import { InputWithLabel, WithLabel } from '@/components/forms/input-with-label';
-import TagInput from '@/components/forms/tag-input';
-import FullPageLoadingState from '@/components/full-page-loading-state';
-import { Button } from '@/components/ui/button';
-import { Combobox } from '@/components/ui/combobox';
-import { Label } from '@/components/ui/label';
-import { useClientSecret } from '@/hooks/use-client-secret';
-import { handleError, useTRPC } from '@/integrations/trpc/react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { zOnboardingProject } from '@openpanel/validation';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -19,7 +8,7 @@ import {
   ServerIcon,
   SmartphoneIcon,
 } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Controller,
   type SubmitHandler,
@@ -27,6 +16,17 @@ import {
   useWatch,
 } from 'react-hook-form';
 import { z } from 'zod';
+import AnimateHeight from '@/components/animate-height';
+import { ButtonContainer } from '@/components/button-container';
+import { InputWithLabel, WithLabel } from '@/components/forms/input-with-label';
+import TagInput from '@/components/forms/tag-input';
+import FullPageLoadingState from '@/components/full-page-loading-state';
+import { Button } from '@/components/ui/button';
+import { Combobox } from '@/components/ui/combobox';
+import { Label } from '@/components/ui/label';
+import { useClientSecret } from '@/hooks/use-client-secret';
+import { handleError, useTRPC } from '@/integrations/trpc/react';
+import { cn } from '@/utils/cn';
 
 const validateSearch = z.object({
   inviteId: z.string().optional(),
@@ -34,8 +34,8 @@ const validateSearch = z.object({
 export const Route = createFileRoute('/_steps/onboarding/project')({
   component: Component,
   validateSearch,
-  beforeLoad: async ({ context }) => {
-    if (!context.session.session) {
+  beforeLoad: ({ context }) => {
+    if (!context.session?.session) {
       throw redirect({ to: '/onboarding' });
     }
   },
@@ -45,7 +45,7 @@ export const Route = createFileRoute('/_steps/onboarding/project')({
       await context.queryClient.prefetchQuery(
         context.trpc.organization.getInvite.queryOptions({
           inviteId: search.data.inviteId,
-        }),
+        })
       );
     }
   },
@@ -57,7 +57,7 @@ type IForm = z.infer<typeof zOnboardingProject>;
 function Component() {
   const trpc = useTRPC();
   const { data: organizations } = useQuery(
-    trpc.organization.list.queryOptions(undefined, { initialData: [] }),
+    trpc.organization.list.queryOptions(undefined, { initialData: [] })
   );
   const [, setSecret] = useClientSecret();
   const navigate = useNavigate();
@@ -73,7 +73,7 @@ function Component() {
           },
         });
       },
-    }),
+    })
   );
 
   const form = useForm<IForm>({
@@ -105,10 +105,18 @@ function Component() {
     control: form.control,
   });
 
+  const domain = useWatch({
+    name: 'domain',
+    control: form.control,
+  });
+
+  const [showCorsInput, setShowCorsInput] = useState(false);
+
   useEffect(() => {
     if (!isWebsite) {
       form.setValue('domain', null);
       form.setValue('cors', []);
+      setShowCorsInput(false);
     }
   }, [isWebsite, form]);
 
@@ -121,8 +129,11 @@ function Component() {
   }, [isWebsite, isApp, isBackend]);
 
   return (
-    <form onSubmit={form.handleSubmit(onSubmit)}>
-      <div className="p-4">
+    <form
+      className="flex min-h-0 flex-1 flex-col"
+      onSubmit={form.handleSubmit(onSubmit)}
+    >
+      <div className="scrollbar-thin flex-1 overflow-y-auto p-4">
         <div className="grid gap-4 md:grid-cols-2">
           {organizations.length > 0 ? (
             <Controller
@@ -134,10 +145,8 @@ function Component() {
                     <Label>Workspace</Label>
                     <Combobox
                       className="w-full"
-                      placeholder="Select workspace"
-                      icon={BuildingIcon}
                       error={formState.errors.organizationId?.message}
-                      value={field.value}
+                      icon={BuildingIcon}
                       items={
                         organizations
                           .filter((item) => item.id)
@@ -147,6 +156,8 @@ function Component() {
                           })) ?? []
                       }
                       onChange={field.onChange}
+                      placeholder="Select workspace"
+                      value={field.value}
                     />
                   </div>
                 );
@@ -155,26 +166,27 @@ function Component() {
           ) : (
             <>
               <InputWithLabel
-                label="Workspace name"
-                info="This is the name of your workspace. It can be anything you like."
-                placeholder="Eg. The Music Company"
                 error={form.formState.errors.organization?.message}
+                info="This is the name of your workspace. It can be anything you like."
+                label="Workspace name"
+                placeholder="Eg. The Music Company"
                 {...form.register('organization')}
               />
               <Controller
-                name="timezone"
                 control={form.control}
+                name="timezone"
                 render={({ field }) => (
                   <WithLabel label="Timezone">
                     <Combobox
-                      placeholder="Select timezone"
+                      className="w-full"
                       items={Intl.supportedValuesOf('timeZone').map((item) => ({
                         value: item,
                         label: item,
                       }))}
-                      value={field.value}
                       onChange={field.onChange}
-                      className="w-full"
+                      placeholder="Select timezone"
+                      searchable
+                      value={field.value}
                     />
                   </WithLabel>
                 )}
@@ -182,122 +194,149 @@ function Component() {
             </>
           )}
           <InputWithLabel
-            label="Project name"
-            placeholder="Eg. The Music App"
             error={form.formState.errors.project?.message}
+            label="Your first project name"
+            placeholder="Eg. The Music App"
             {...form.register('project')}
             className="col-span-2"
           />
         </div>
-        <div className="flex flex-col divide-y mt-4">
-          <Controller
-            name="website"
-            control={form.control}
-            render={({ field }) => (
-              <CheckboxItem
-                error={form.formState.errors.website?.message}
-                Icon={MonitorIcon}
-                label="Website"
-                disabled={isApp}
-                description="Track events and conversion for your website"
-                {...field}
+        <div className="mt-4">
+          <Label className="mb-2">What are you tracking?</Label>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              {
+                key: 'website' as const,
+                label: 'Website',
+                Icon: MonitorIcon,
+                active: isWebsite,
+              },
+              {
+                key: 'app' as const,
+                label: 'App',
+                Icon: SmartphoneIcon,
+                active: isApp,
+              },
+              {
+                key: 'backend' as const,
+                label: 'Backend / API',
+                Icon: ServerIcon,
+                active: isBackend,
+              },
+            ].map(({ key, label, Icon, active }) => (
+              <button
+                className={cn(
+                  'flex flex-col items-center gap-2 rounded-lg border-2 p-4 transition-colors',
+                  active
+                    ? 'border-primary bg-primary/5 text-primary'
+                    : 'border-border text-muted-foreground hover:border-primary/40'
+                )}
+                key={key}
+                onClick={() => {
+                  form.setValue(key, !active, { shouldValidate: true });
+                }}
+                type="button"
               >
-                <AnimateHeight open={isWebsite && !isApp}>
-                  <div className="p-4 pl-14">
-                    <InputWithLabel
-                      label="Domain"
-                      placeholder="Your website address"
-                      {...form.register('domain')}
-                      className="mb-4"
-                      error={form.formState.errors.domain?.message}
-                      onBlur={(e) => {
-                        const value = e.target.value.trim();
-                        if (
-                          value.includes('.') &&
-                          form.getValues().cors.length === 0 &&
-                          !form.formState.errors.domain
-                        ) {
-                          form.setValue('cors', [value]);
-                        }
-                      }}
-                    />
+                <Icon size={24} />
+                <span className="font-medium text-sm">{label}</span>
+              </button>
+            ))}
+          </div>
+          {(form.formState.errors.website?.message ||
+            form.formState.errors.app?.message ||
+            form.formState.errors.backend?.message) && (
+            <p className="mt-2 text-destructive text-sm">
+              At least one type must be selected
+            </p>
+          )}
+          <AnimateHeight open={isWebsite}>
+            <div className="mt-4">
+              <InputWithLabel
+                label="Domain"
+                placeholder="example.com"
+                {...form.register('domain')}
+                error={form.formState.errors.domain?.message}
+                onBlur={(e) => {
+                  const raw = e.target.value.trim();
+                  if (!raw) {
+                    return;
+                  }
 
-                    <Controller
-                      name="cors"
-                      control={form.control}
-                      render={({ field }) => (
-                        <WithLabel label="Allowed domains">
-                          <TagInput
-                            {...field}
-                            error={form.formState.errors.cors?.message}
-                            placeholder="Accept events from these domains"
-                            value={field.value ?? []}
-                            renderTag={(tag) =>
-                              tag === '*'
-                                ? 'Accept events from any domains'
-                                : tag
-                            }
-                            onChange={(newValue) => {
-                              field.onChange(
-                                newValue.map((item) => {
-                                  const trimmed = item.trim();
-                                  if (
-                                    trimmed.startsWith('http://') ||
-                                    trimmed.startsWith('https://') ||
-                                    trimmed === '*'
-                                  ) {
-                                    return trimmed;
-                                  }
-                                  return `https://${trimmed}`;
-                                }),
-                              );
-                            }}
-                          />
-                        </WithLabel>
-                      )}
-                    />
-                  </div>
-                </AnimateHeight>
-              </CheckboxItem>
-            )}
-          />
-          <Controller
-            name="app"
-            control={form.control}
-            render={({ field }) => (
-              <CheckboxItem
-                error={form.formState.errors.app?.message}
-                disabled={isWebsite}
-                Icon={SmartphoneIcon}
-                label="App"
-                description="Track events and conversion for your app"
-                {...field}
+                  const hasProtocol =
+                    raw.startsWith('http://') || raw.startsWith('https://');
+                  const value = hasProtocol ? raw : `https://${raw}`;
+
+                  form.setValue('domain', value, { shouldValidate: true });
+                  if (form.getValues().cors.length === 0) {
+                    form.setValue('cors', [value]);
+                  }
+                }}
               />
-            )}
-          />
-          <Controller
-            name="backend"
-            control={form.control}
-            render={({ field }) => (
-              <CheckboxItem
-                error={form.formState.errors.backend?.message}
-                Icon={ServerIcon}
-                label="Backend / API"
-                description="Track events and conversion for your backend / API"
-                {...field}
-              />
-            )}
-          />
+              {domain && (
+                <>
+                  <button
+                    className="mt-2 text-muted-foreground text-sm hover:text-foreground"
+                    onClick={() => setShowCorsInput((open) => !open)}
+                    type="button"
+                  >
+                    All events from{' '}
+                    <span className="font-medium text-foreground">
+                      {domain}
+                    </span>{' '}
+                    will be allowed. Do you want to allow any other?
+                  </button>
+                  <AnimateHeight open={showCorsInput}>
+                    <div className="mt-3">
+                      <Controller
+                        control={form.control}
+                        name="cors"
+                        render={({ field }) => (
+                          <WithLabel label="Allowed domains">
+                            <TagInput
+                              {...field}
+                              error={form.formState.errors.cors?.message}
+                              onChange={(newValue: string[]) => {
+                                field.onChange(
+                                  newValue.map((item: string) => {
+                                    const trimmed = item.trim();
+                                    if (
+                                      trimmed.startsWith('http://') ||
+                                      trimmed.startsWith('https://') ||
+                                      trimmed === '*'
+                                    ) {
+                                      return trimmed;
+                                    }
+                                    return `https://${trimmed}`;
+                                  })
+                                );
+                              }}
+                              placeholder="Accept events from these domains"
+                              renderTag={(tag: string) =>
+                                tag === '*'
+                                  ? 'Accept events from any domains'
+                                  : tag
+                              }
+                              value={field.value ?? []}
+                            />
+                          </WithLabel>
+                        )}
+                      />
+                    </div>
+                  </AnimateHeight>
+                </>
+              )}
+            </div>
+          </AnimateHeight>
         </div>
       </div>
 
-      <ButtonContainer className="p-4 border-t">
+      <ButtonContainer className="mt-0 flex-shrink-0 border-t bg-background p-4">
         <div />
         <Button
-          type="submit"
-          size="lg"
           className="min-w-28 self-start"
           loading={mutation.isPending}
+          size="lg"
+          type="submit"
         >
           Next
         </Button>

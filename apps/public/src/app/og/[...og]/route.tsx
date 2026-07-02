@@ -1,17 +1,20 @@
-import { getAllCompareSlugs, getCompareData } from '@/lib/compare';
-import { url as baseUrl } from '@/lib/layout.shared';
-import { articleSource, guideSource, pageSource, source } from '@/lib/source';
 import { ImageResponse } from 'next/og';
 import type { NextRequest } from 'next/server';
+import { getCompareData } from '@/lib/compare';
+import { getFeatureData } from '@/lib/features';
+import { url as baseUrl } from '@/lib/layout.shared';
+import { articleSource, guideSource, pageSource, source } from '@/lib/source';
 
 // Truncate text helper
 function truncateText(text: string, maxLength: number): string {
-  if (text.length <= maxLength) return text;
+  if (text.length <= maxLength) {
+    return text;
+  }
   return `${text.substring(0, maxLength).trim()}...`;
 }
 
 async function getOgData(
-  segments: string[],
+  segments: string[]
 ): Promise<{ title: string; description?: string }> {
   switch (segments[0]) {
     case 'default':
@@ -24,6 +27,20 @@ async function getOgData(
         title: 'Become a Supporter',
         description:
           'Support OpenPanel and get exclusive perks like latest Docker images, prioritized support, and early access to new features.',
+      };
+    }
+    case 'open-source': {
+      return {
+        title: 'Free analytics for open source projects',
+        description:
+          "Get free web and product analytics for your open source project. Track up to 2.5M events/month. Apply to OpenPanel's open source program today.",
+      };
+    }
+    case 'open-source-analytics': {
+      return {
+        title: 'Open Source Analytics for Web and Product Teams',
+        description:
+          'OpenPanel is an open source analytics platform that combines web analytics and product analytics in one privacy-first tool. Track pageviews, events, funnels, retention, and user journeys — all without cookies.',
       };
     }
     case 'pricing': {
@@ -74,6 +91,22 @@ async function getOgData(
       return {
         title: 'Implementation Guides',
         description: 'Step-by-step tutorials for adding analytics to your app',
+      };
+    }
+    case 'features': {
+      const slug = segments[1];
+      if (!slug) {
+        return {
+          title: 'Product analytics features',
+          description:
+            'Explore OpenPanel features: event tracking, funnels, retention, user profiles, and more.',
+        };
+      }
+      const featureData = await getFeatureData(slug);
+      return {
+        title: featureData?.seo.title ?? 'Feature Not Found',
+        description:
+          featureData?.seo.description ?? featureData?.hero.subheading,
       };
     }
     case 'docs': {
@@ -164,7 +197,7 @@ async function getOgData(
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ og: string[] }> },
+  { params }: { params: Promise<{ og: string[] }> }
 ) {
   try {
     const { og } = await params;
@@ -184,10 +217,10 @@ export async function GET(
     // Fetch Geist font files from CDN (cache fonts for better performance)
     const [geistRegular, geistBold] = await Promise.all([
       fetch(
-        'https://cdn.jsdelivr.net/npm/geist@1.5.1/dist/fonts/geist-sans/Geist-Regular.ttf',
+        'https://cdn.jsdelivr.net/npm/geist@1.5.1/dist/fonts/geist-sans/Geist-Regular.ttf'
       ).then((res) => res.arrayBuffer()),
       fetch(
-        'https://cdn.jsdelivr.net/npm/geist@1.5.1/dist/fonts/geist-sans/Geist-Bold.ttf',
+        'https://cdn.jsdelivr.net/npm/geist@1.5.1/dist/fonts/geist-sans/Geist-Bold.ttf'
       ).then((res) => res.arrayBuffer()),
     ]);
 
@@ -264,7 +297,7 @@ export async function GET(
             weight: 700,
           },
         ],
-      },
+      }
     );
   } catch (e: any) {
     console.error(`Failed to generate OG image: ${e.message}`);

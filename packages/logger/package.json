@@ -7,9 +7,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@hyperdx/node-opentelemetry": "^0.8.1",
+    "@hyperdx/node-opentelemetry": "catalog:",
     "luxon": "^3.7.2",
-    "winston": "^3.14.2"
+    "pino": "catalog:",
+    "pino-pretty": "catalog:"
   },
   "devDependencies": {
     "@openpanel/tsconfig": "workspace:*",

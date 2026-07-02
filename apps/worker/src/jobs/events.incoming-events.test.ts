@@ -1,18 +1,15 @@
 import {
-  type IClickhouseSession,
-  type IServiceEvent,
-  type IServiceSession,
   createEvent,
   formatClickhouseDate,
+  type IClickhouseSession,
   sessionBuffer,
 } from '@openpanel/db';
-import { eventBuffer } from '@openpanel/db';
 import {
   type EventsQueuePayloadIncomingEvent,
   sessionsQueue,
 } from '@openpanel/queue';
 import type { Job } from 'bullmq';
-import { type Mock, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { incomingEvent } from './events.incoming-event';
 
 vi.mock('@openpanel/queue');
@@ -22,6 +19,8 @@ vi.mock('@openpanel/db', async () => {
     ...actual,
     createEvent: vi.fn(),
     checkNotificationRulesForEvent: vi.fn().mockResolvedValue(true),
+    getProjectByIdCached: vi.fn().mockResolvedValue({ filters: [] }),
+    matchEvent: vi.fn().mockReturnValue(false),
     sessionBuffer: {
       getExistingSession: vi.fn(),
     },
@@ -31,8 +30,9 @@ vi.mock('@openpanel/db', async () => {
 // 30 minutes
 const SESSION_TIMEOUT = 30 * 60 * 1000;
 const projectId = 'test-project';
-const currentDeviceId = 'device-123';
-const previousDeviceId = 'device-456';
+const deviceId = 'device-123';
+// Valid UUID used when creating a new session in tests
+const newSessionId = 'a1b2c3d4-e5f6-4789-a012-345678901234';
 const geo = {
   country: 'US',
   city: 'New York',
@@ -69,7 +69,9 @@ describe('incomingEvent', () => {
   });
 
   it('should create a session start and an event', async () => {
-    const spySessionsQueueAdd = vi.spyOn(sessionsQueue, 'add');
+    const spySessionsQueueAdd = vi
+      .spyOn(sessionsQueue, 'add')
+      .mockResolvedValue({} as Job);
     const timestamp = new Date();
     // Mock job data
     const jobData: EventsQueuePayloadIncomingEvent['payload'] = {
@@ -89,19 +91,16 @@ describe('incomingEvent', () => {
         'openpanel-sdk-version': '1.0.0',
       },
       projectId,
-      currentDeviceId,
-      previousDeviceId,
+      deviceId,
+      sessionId: newSessionId,
     };
-
-    // Execute the job
-    await incomingEvent(jobData);
-
     const event = {
       name: 'test_event',
-      deviceId: currentDeviceId,
+      deviceId,
       profileId: '',
       sessionId: expect.stringMatching(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        // biome-ignore lint/performance/useTopLevelRegex: test
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
       ),
       projectId,
       properties: {
@@ -130,7 +129,13 @@ describe('incomingEvent', () => {
       referrerType: '',
       sdkName: jobData.headers['openpanel-sdk-name'],
       sdkVersion: jobData.headers['openpanel-sdk-version'],
+      groups: [],
     };
+
+    (createEvent as Mock).mockReturnValue(event);
+
+    // Execute the job
+    await incomingEvent(jobData);
 
     expect(spySessionsQueueAdd).toHaveBeenCalledWith(
       'session',
@@ -140,13 +145,13 @@ describe('incomingEvent', () => {
       },
       {
         delay: SESSION_TIMEOUT,
-        jobId: `sessionEnd:${projectId}:${currentDeviceId}`,
+        jobId: `sessionEnd:${projectId}:${deviceId}`,
         attempts: 3,
         backoff: {
           delay: 200,
           type: 'exponential',
         },
-      },
+      }
     );
 
     expect((createEvent as Mock).mock.calls[0]![0]).toStrictEqual({
@@ -180,8 +185,13 @@ describe('incomingEvent', () => {
       },
       uaInfo,
       projectId,
-      currentDeviceId,
-      previousDeviceId,
+      deviceId,
+      sessionId: 'session-123',
+      session: {
+        referrer: '',
+        referrerName: '',
+        referrerType: '',
+      },
     };
 
     const changeDelay = vi.fn();
@@ -194,9 +204,7 @@ describe('incomingEvent', () => {
         type: 'createSessionEnd',
         payload: {
           sessionId: 'session-123',
-          deviceId: currentDeviceId,
-          profileId: currentDeviceId,
-          projectId,
+          deviceId,
         },
       },
     } as Partial<Job> as Job);
@@ -205,7 +213,7 @@ describe('incomingEvent', () => {
 
     const event = {
       name: 'test_event',
-      deviceId: currentDeviceId,
+      deviceId,
       profileId: '',
       sessionId: 'session-123',
       projectId,
@@ -235,6 +243,7 @@ describe('incomingEvent', () => {
       referrerType: '',
       sdkName: jobData.headers['openpanel-sdk-name'],
       sdkVersion: jobData.headers['openpanel-sdk-version'],
+      groups: [],
     };
 
     expect(spySessionsQueueAdd).toHaveBeenCalledTimes(0);
@@ -261,29 +270,9 @@ describe('incomingEvent', () => {
         'request-id': '123',
       },
       projectId,
-      currentDeviceId: '',
-      previousDeviceId: '',
+      deviceId: '',
+      sessionId: '',
       uaInfo: uaInfoServer,
-    };
-
-    const mockLastScreenView = {
-      deviceId: 'last-device-123',
-      sessionId: 'last-session-456',
-      country: 'CA',
-      city: 'Toronto',
-      region: 'ON',
-      os: 'iOS',
-      osVersion: '15.0',
-      browser: 'Safari',
-      browserVersion: '15.0',
-      device: 'mobile',
-      brand: 'Apple',
-      model: 'iPhone',
-      path: '/last-path',
-      origin: 'https://example.com',
-      referrer: 'https://google.com',
-      referrerName: 'Google',
-      referrerType: 'search',
     };
 
     vi.mocked(sessionBuffer.getExistingSession).mockResolvedValueOnce({
@@ -322,9 +311,9 @@ describe('incomingEvent', () => {
       project_id: projectId,
       device_id: 'last-device-123',
       profile_id: 'profile-123',
-      screen_views: [],
       sign: 1,
       version: 1,
+      groups: [],
     } satisfies IClickhouseSession);
 
     await incomingEvent(jobData);
@@ -362,6 +351,7 @@ describe('incomingEvent', () => {
       sdkName: 'server',
       sdkVersion: '1.0.0',
       revenue: undefined,
+      groups: [],
     });
 
     expect(sessionsQueue.add).not.toHaveBeenCalled();
@@ -385,8 +375,8 @@ describe('incomingEvent', () => {
         'request-id': '123',
       },
       projectId,
-      currentDeviceId: '',
-      previousDeviceId: '',
+      deviceId: '',
+      sessionId: '',
       uaInfo: uaInfoServer,
     };
 
@@ -425,6 +415,7 @@ describe('incomingEvent', () => {
       referrerType: undefined,
       sdkName: 'server',
       sdkVersion: '1.0.0',
+      groups: [],
     });
 
     expect(sessionsQueue.add).not.toHaveBeenCalled();

@@ -4,6 +4,7 @@ import { Section, SectionHeader } from '@/components/section';
 import { Button } from '@/components/ui/button';
 import {
   ChartBarIcon,
+  ChevronRightIcon,
   DollarSignIcon,
   LayoutDashboardIcon,
   RocketIcon,
@@ -14,22 +15,25 @@ import { CollaborationChart } from './collaboration-chart';
 
 const features = [
   {
-    title: 'Visualize your data',
+    title: 'Flexible data visualization',
     description:
-      'See your data in a visual way. You can create advanced reports and more to understand',
+      'Build line charts, bar charts, sankey flows, and custom dashboards. Combine metrics from any event into a single view.',
     icon: ChartBarIcon,
+    slug: 'data-visualization',
   },
   {
     title: 'Share & Collaborate',
     description:
-      'Build interactive dashboards and share insights with your team. Export reports, set up notifications, and keep everyone aligned.',
+      'Invite unlimited team members with org-wide or project-level access. Share dashboards publicly or lock them behind a password.',
     icon: LayoutDashboardIcon,
+    slug: 'share-and-collaborate',
   },
   {
-    title: 'Integrations',
+    title: 'Integrations & Webhooks',
     description:
-      'Get notified when new events are created, or forward specific events to your own systems with our east to use integrations.',
+      'Forward events to your own systems or third-party tools. Connect OpenPanel to Slack, your data warehouse, or any webhook endpoint.',
     icon: WorkflowIcon,
+    slug: 'integrations',
   },
 ];
 
@@ -48,7 +52,11 @@ export function Collaboration() {
 
           <div className="col gap-6 mt-16">
             {features.map((feature) => (
-              <div className="col gap-2" key={feature.title}>
+              <Link
+                href={`/features/${feature.slug}`}
+                className="group relative col gap-2 pr-10 overflow-hidden"
+                key={feature.title}
+              >
                 <h3 className="font-semibold">
                   <feature.icon className="size-6 inline-block mr-2 relative -top-0.5" />
                   {feature.title}
@@ -56,7 +64,11 @@ export function Collaboration() {
                 <p className="text-muted-foreground text-sm">
                   {feature.description}
                 </p>
-              </div>
+                <ChevronRightIcon
+                  className="absolute right-0 top-1/2 size-5 -translate-y-1/2 text-muted-foreground transition-transform duration-200 translate-x-full group-hover:translate-x-0"
+                  aria-hidden
+                />
+              </Link>
             ))}
           </div>
         </div>

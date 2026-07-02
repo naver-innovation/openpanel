@@ -28,6 +28,7 @@ Openpanel is an open-source web and product analytics platform that combines the
 ## ✨ Features
 
 - **🔍 Advanced Analytics**: Funnels, cohorts, user profiles, and session history
+- **🎬 Session Replay**: Record and replay user sessions with privacy controls built in
 - **📊 Real-time Dashboards**: Live data updates and interactive charts
 - **🎯 A/B Testing**: Built-in variant testing with detailed breakdowns
 - **🔔 Smart Notifications**: Event and funnel-based alerts
@@ -37,6 +38,9 @@ Openpanel is an open-source web and product analytics platform that combines the
 - **💸 Transparent Pricing**: No hidden costs or usage limits
 - **🛠️ Custom Dashboards**: Flexible chart creation and data visualization
 - **📱 Multi-Platform**: Web, mobile (iOS/Android), and server-side tracking
+- **🤖 MCP Server**: Ask Claude, Cursor, or any MCP client about your users — 38 tools, hosted, no install
+- **💰 Revenue Tracking**: Monitor purchases, subscriptions, and LTV alongside product events
+- **🔌 Integrations**: Connect Google Search Console, and more to enrich your data
 
 ## 📊 Analytics Platform Comparison
 
@@ -48,6 +52,7 @@ Openpanel is an open-source web and product analytics platform that combines the
 | 🔁 Real-time dashboards                | ✅         | ✅        | ❌        | ✅         |
 | 🔍 Funnels & cohort analysis           | ✅         | ✅        | ✅*       | ✅***         |
 | 👤 User profiles & session history     | ✅         | ✅        | ❌        | ❌         |
+| 🎬 Session replay                      | ✅         | ✅****    | ❌        | ❌         |
 | 📈 Custom dashboards & charts          | ✅         | ✅        | ✅        | ❌         |
 | 💬 Event & funnel notifications        | ✅         | ✅        | ❌        | ❌         |
 | 🌍 GDPR-compliant tracking             | ✅         | ✅        | ❌**      | ✅         |
@@ -56,9 +61,10 @@ Openpanel is an open-source web and product analytics platform that combines the
 | 🚀 Built for developers                | ✅         | ✅        | ❌        | ✅         |
 | 🔧 A/B testing & variant breakdowns    | ✅         | ✅        | ❌        | ❌         |
 
-> ✅* GA4 has a free tier but often requires BigQuery (paid) for raw data access.  
-> ❌** GA4 has faced GDPR bans in several EU countries due to data transfers to US-based servers.  
+> ✅* GA4 has a free tier but often requires BigQuery (paid) for raw data access.
+> ❌** GA4 has faced GDPR bans in several EU countries due to data transfers to US-based servers.
 > ✅*** Plausible has simple goals
+> ✅**** Mixpanel session replay is limited to 5k sessions/month on free and 20k on paid. OpenPanel has no limit.
 
 ## Stack
 

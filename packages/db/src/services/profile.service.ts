@@ -1,23 +1,25 @@
-import { omit, uniq } from 'ramda';
-import sqlstring from 'sqlstring';
-
 import { strip, toObject } from '@openpanel/common';
 import { cacheable } from '@openpanel/redis';
 import type { IChartEventFilter } from '@openpanel/validation';
-
+import { uniq } from 'ramda';
+import sqlstring from 'sqlstring';
 import { profileBuffer } from '../buffers';
 import {
-  TABLE_NAMES,
   ch,
   chQuery,
   convertClickhouseDateToJs,
   formatClickhouseDate,
+  isClickhouseDefaultMinDate,
+  TABLE_NAMES,
 } from '../clickhouse/client';
+import { clix } from '../clickhouse/query-builder';
 import { createSqlBuilder } from '../sql-builder';
+import type { IClickhouseEvent } from './event.service';
+import type { IClickhouseSession } from './session.service';
 
-export type IProfileMetrics = {
-  lastSeen: Date;
-  firstSeen: Date;
+export interface IProfileMetrics {
+  lastSeen: Date | null;
+  firstSeen: Date | null;
   screenViews: number;
   sessions: number;
   durationAvg: number;
@@ -29,7 +31,7 @@ export type IProfileMetrics = {
   conversionEvents: number;
   avgTimeBetweenSessions: number;
   revenue: number;
-};
+}
 export function getProfileMetrics(profileId: string, projectId: string) {
   return chQuery<
     Omit<IProfileMetrics, 'lastSeen' | 'firstSeen'> & {
@@ -100,8 +102,12 @@ export function getProfileMetrics(profileId: string, projectId: string) {
     .then((data) => {
       return {
         ...data,
-        lastSeen: convertClickhouseDateToJs(data.lastSeen),
-        firstSeen: convertClickhouseDateToJs(data.firstSeen),
+        lastSeen: isClickhouseDefaultMinDate(data.lastSeen)
+          ? null
+          : convertClickhouseDateToJs(data.lastSeen),
+        firstSeen: isClickhouseDefaultMinDate(data.firstSeen)
+          ? null
+          : convertClickhouseDateToJs(data.firstSeen),
       };
     });
 }
@@ -127,7 +133,7 @@ export async function getProfileById(id: string, projectId: string) {
       last_value(is_external) as is_external, 
       last_value(properties) as properties, 
       last_value(created_at) as created_at
-    FROM ${TABLE_NAMES.profiles} FINAL WHERE id = ${sqlstring.escape(String(id))} AND project_id = ${sqlstring.escape(projectId)} GROUP BY id, project_id ORDER BY created_at DESC LIMIT 1`,
+    FROM ${TABLE_NAMES.profiles} FINAL WHERE id = ${sqlstring.escape(String(id))} AND project_id = ${sqlstring.escape(projectId)} GROUP BY id, project_id ORDER BY created_at DESC LIMIT 1`
   );
 
   if (!profile) {
@@ -163,13 +169,14 @@ export async function getProfiles(ids: string[], projectId: string) {
       any(nullIf(avatar, '')) as avatar, 
       last_value(is_external) as is_external, 
       any(properties) as properties, 
-      any(created_at) as created_at
+      any(created_at) as created_at,
+      any(groups) as groups
     FROM ${TABLE_NAMES.profiles}
     WHERE 
       project_id = ${sqlstring.escape(projectId)} AND
       id IN (${filteredIds.map((id) => sqlstring.escape(id)).join(',')})
     GROUP BY id, project_id
-    `,
+    `
   );
 
   return data.map(transformProfile);
@@ -221,7 +228,7 @@ export async function getProfileListCount({
   return data[0]?.count ?? 0;
 }
 
-export type IServiceProfile = {
+export interface IServiceProfile {
   id: string;
   email: string;
   avatar: string;
@@ -230,6 +237,7 @@ export type IServiceProfile = {
   createdAt: Date;
   isExternal: boolean;
   projectId: string;
+  groups: string[];
   properties: Record<string, unknown> & {
     region?: string;
     country?: string;
@@ -245,7 +253,7 @@ export type IServiceProfile = {
     model?: string;
     referrer?: string;
   };
-};
+}
 
 export interface IClickhouseProfile {
   id: string;
@@ -257,17 +265,19 @@ export interface IClickhouseProfile {
   project_id: string;
   is_external: boolean;
   created_at: string;
+  groups: string[];
 }
 
 export interface IServiceUpsertProfile {
   projectId: string;
-  id: string;
+  id: string | number;
   firstName?: string;
   lastName?: string;
   email?: string;
   avatar?: string;
   properties?: Record<string, unknown>;
   isExternal: boolean;
+  groups?: string[];
 }
 
 export function transformProfile({
@@ -286,10 +296,11 @@ export function transformProfile({
     id: profile.id,
     email: profile.email,
     avatar: profile.avatar,
+    groups: profile.groups ?? [],
   };
 }
 
-export async function upsertProfile(
+export function upsertProfile(
   {
     id,
     firstName,
@@ -299,11 +310,12 @@ export async function upsertProfile(
     properties,
     projectId,
     isExternal,
+    groups,
   }: IServiceUpsertProfile,
-  isFromEvent = false,
+  isFromEvent = false
 ) {
   const profile: IClickhouseProfile = {
-    id,
+    id: String(id),
     first_name: firstName || '',
     last_name: lastName || '',
     email: email || '',
@@ -312,7 +324,173 @@ export async function upsertProfile(
     project_id: projectId,
     created_at: formatClickhouseDate(new Date()),
     is_external: isExternal,
+    groups: groups ?? [],
   };
 
   return profileBuffer.add(profile, isFromEvent);
+}
+
+const PROFILE_COLUMNS =
+  'id, first_name, last_name, email, avatar, properties, project_id, is_external, created_at, groups';
+
+export interface FindProfilesInput {
+  projectId: string;
+  name?: string;
+  email?: string;
+  country?: string;
+  city?: string;
+  device?: string;
+  browser?: string;
+  inactiveDays?: number;
+  minSessions?: number;
+  performedEvent?: string;
+  sortBy?: 'created_at';
+  sortOrder?: 'asc' | 'desc';
+  limit?: number;
+}
+
+export function findProfilesCore(
+  input: FindProfilesInput
+): Promise<IClickhouseProfile[]> {
+  const pid = sqlstring.escape(input.projectId);
+  const conditions: string[] = [`project_id = ${pid}`];
+
+  if (input.email) {
+    conditions.push(`email LIKE ${sqlstring.escape(`%${input.email}%`)}`);
+  }
+  if (input.name) {
+    const escaped = sqlstring.escape(`%${input.name}%`);
+    conditions.push(
+      `(first_name LIKE ${escaped} OR last_name LIKE ${escaped})`
+    );
+  }
+  if (input.country) {
+    conditions.push(
+      `properties['country'] = ${sqlstring.escape(input.country)}`
+    );
+  }
+  if (input.city) {
+    conditions.push(`properties['city'] = ${sqlstring.escape(input.city)}`);
+  }
+  if (input.device) {
+    conditions.push(`properties['device'] = ${sqlstring.escape(input.device)}`);
+  }
+  if (input.browser) {
+    conditions.push(
+      `properties['browser'] = ${sqlstring.escape(input.browser)}`
+    );
+  }
+
+  if (input.inactiveDays !== undefined) {
+    const days = Math.floor(input.inactiveDays);
+    conditions.push(`id NOT IN (
+      SELECT DISTINCT profile_id FROM ${TABLE_NAMES.events}
+      WHERE project_id = ${pid}
+        AND profile_id != ''
+        AND created_at >= now() - INTERVAL ${days} DAY
+    )`);
+  }
+
+  if (input.minSessions !== undefined) {
+    const min = Math.floor(input.minSessions);
+    conditions.push(`id IN (
+      SELECT profile_id FROM ${TABLE_NAMES.sessions}
+      WHERE project_id = ${pid}
+        AND sign = 1
+        AND profile_id != ''
+      GROUP BY profile_id
+      HAVING count() >= ${min}
+    )`);
+  }
+
+  if (input.performedEvent) {
+    conditions.push(`id IN (
+      SELECT DISTINCT profile_id FROM ${TABLE_NAMES.events}
+      WHERE project_id = ${pid}
+        AND name = ${sqlstring.escape(input.performedEvent)}
+    )`);
+  }
+
+  const orderDir = input.sortOrder === 'asc' ? 'ASC' : 'DESC';
+  const limit = Math.min(input.limit ?? 20, 100);
+
+  const sql = `
+    SELECT ${PROFILE_COLUMNS}
+    FROM ${TABLE_NAMES.profiles}
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY created_at ${orderDir}
+    LIMIT ${limit}
+  `;
+
+  return chQuery<IClickhouseProfile>(sql);
+}
+
+export async function getProfileWithEvents(
+  projectId: string,
+  profileId: string,
+  eventLimit = 10
+): Promise<{
+  profile: IClickhouseProfile | null;
+  recent_events: IClickhouseEvent[];
+}> {
+  const [profiles, recent_events] = await Promise.all([
+    chQuery<IClickhouseProfile>(`
+      SELECT ${PROFILE_COLUMNS}
+      FROM ${TABLE_NAMES.profiles}
+      WHERE project_id = ${sqlstring.escape(projectId)} AND id = ${sqlstring.escape(profileId)}
+      LIMIT 1
+    `),
+    clix(ch)
+      .select<IClickhouseEvent>([])
+      .from(TABLE_NAMES.events)
+      .where('project_id', '=', projectId)
+      .where('profile_id', '=', profileId)
+      .orderBy('created_at', 'DESC')
+      .limit(eventLimit)
+      .execute(),
+  ]);
+
+  return { profile: profiles[0] ?? null, recent_events };
+}
+
+export function getProfileSessionsCore(
+  projectId: string,
+  profileId: string,
+  limit = 20
+): Promise<IClickhouseSession[]> {
+  return clix(ch)
+    .select<IClickhouseSession>([])
+    .from(TABLE_NAMES.sessions)
+    .where('project_id', '=', projectId)
+    .where('profile_id', '=', profileId)
+    .where('sign', '=', 1)
+    .orderBy('created_at', 'DESC')
+    .limit(limit)
+    .execute();
+}
+
+export async function getProfileMetricsCore(input: {
+  projectId: string;
+  profileId: string;
+}) {
+  const raw = await getProfileMetrics(input.profileId, input.projectId);
+  if (!raw) {
+    throw new Error(`Profile not found or has no events: ${input.profileId}`);
+  }
+  return {
+    profileId: input.profileId,
+    firstSeen: raw.firstSeen,
+    lastSeen: raw.lastSeen,
+    sessions: raw.sessions,
+    screenViews: raw.screenViews,
+    totalEvents: raw.totalEvents,
+    conversionEvents: raw.conversionEvents,
+    uniqueDaysActive: raw.uniqueDaysActive,
+    avgSessionDurationMin: raw.durationAvg,
+    p90SessionDurationMin: raw.durationP90,
+    avgEventsPerSession: raw.avgEventsPerSession,
+    avgTimeBetweenSessionsSec: raw.avgTimeBetweenSessions,
+    bounceRate: raw.bounceRate,
+    revenue: raw.revenue,
+  };
 }

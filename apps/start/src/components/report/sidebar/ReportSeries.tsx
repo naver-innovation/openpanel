@@ -1,5 +1,6 @@
 import { ColorSquare } from '@/components/color-square';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { ComboboxEvents } from '@/components/ui/combobox-events';
 import { Input } from '@/components/ui/input';
 import { InputEnter } from '@/components/ui/input-enter';
@@ -23,15 +24,13 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { shortId } from '@openpanel/common';
 import { alphabetIds } from '@openpanel/constants';
 import type {
   IChartEvent,
   IChartEventItem,
   IChartFormula,
 } from '@openpanel/validation';
-import { FilterIcon, HandIcon, PiIcon } from 'lucide-react';
-import { ReportSegment } from '../ReportSegment';
+import { HandIcon, PiIcon, PlusIcon } from 'lucide-react';
 import {
   addSerie,
   changeEvent,
@@ -39,27 +38,50 @@ import {
   removeEvent,
   reorderEvents,
 } from '../reportSlice';
-import { EventPropertiesCombobox } from './EventPropertiesCombobox';
-import { PropertiesCombobox } from './PropertiesCombobox';
 import type { ReportEventMoreProps } from './ReportEventMore';
 import { ReportEventMore } from './ReportEventMore';
-import { FiltersList } from './filters/FiltersList';
+import {
+  ReportSeriesItem,
+  type ReportSeriesItemProps,
+} from './ReportSeriesItem';
 
-function SortableSeries({
+// Matches a single uppercase letter that isn't part of a larger identifier,
+// which is how mathjs treats series references in formulas (A, B, C, ...).
+const ALPHA_REFERENCE_REGEX = /(?<![a-zA-Z0-9_])[A-Z](?![a-zA-Z0-9_])/g;
+
+function getReferencedAlphaIds(
+  formula: string,
+  formulaIndex: number,
+): string[] {
+  if (!formula) {
+    return [];
+  }
+  const matches = formula.match(ALPHA_REFERENCE_REGEX) ?? [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const match of matches) {
+    if (seen.has(match)) {
+      continue;
+    }
+    const idx = alphabetIds.indexOf(match as (typeof alphabetIds)[number]);
+    // Only include references to series that exist before this formula
+    if (idx === -1 || idx >= formulaIndex) {
+      continue;
+    }
+    seen.add(match);
+    result.push(match);
+  }
+  return result;
+}
+
+function SortableReportSeriesItem({
   event,
   index,
   showSegment,
   showAddFilter,
   isSelectManyEvents,
   ...props
-}: {
-  event: IChartEventItem | IChartEvent;
-  index: number;
-  showSegment: boolean;
-  showAddFilter: boolean;
-  isSelectManyEvents: boolean;
-} & React.HTMLAttributes<HTMLDivElement>) {
-  const dispatch = useDispatch();
+}: Omit<ReportSeriesItemProps, 'renderDragHandle'>) {
   const eventId = 'type' in event ? event.id : (event as IChartEvent).id;
   const { attributes, listeners, setNodeRef, transform, transition } =
     useSortable({ id: eventId ?? '' });
@@ -69,85 +91,26 @@ function SortableSeries({
     transition,
   };
 
-  // Normalize event to have type field
-  const normalizedEvent: IChartEventItem =
-    'type' in event ? event : { ...event, type: 'event' as const };
-
-  const isFormula = normalizedEvent.type === 'formula';
-  const chartEvent = isFormula
-    ? null
-    : (normalizedEvent as IChartEventItem & { type: 'event' });
-
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...props}>
-      <div className="flex items-center gap-2 p-2 group">
-        <button className="cursor-grab active:cursor-grabbing" {...listeners}>
-          <ColorSquare className="relative">
-            <HandIcon className="size-3 opacity-0 scale-50 group-hover:opacity-100 group-hover:scale-100 transition-all absolute inset-1" />
-            <span className="block group-hover:opacity-0 group-hover:scale-0 transition-all">
-              {alphabetIds[index]}
-            </span>
-          </ColorSquare>
-        </button>
-        {props.children}
-      </div>
-
-      {/* Segment and Filter buttons - only for events */}
-      {chartEvent && (showSegment || showAddFilter) && (
-        <div className="flex gap-2 p-2 pt-0">
-          {showSegment && (
-            <ReportSegment
-              value={chartEvent.segment}
-              onChange={(segment) => {
-                dispatch(
-                  changeEvent({
-                    ...chartEvent,
-                    segment,
-                  }),
-                );
-              }}
-            />
-          )}
-          {showAddFilter && (
-            <PropertiesCombobox
-              event={chartEvent}
-              onSelect={(action) => {
-                dispatch(
-                  changeEvent({
-                    ...chartEvent,
-                    filters: [
-                      ...chartEvent.filters,
-                      {
-                        id: shortId(),
-                        name: action.value,
-                        operator: 'is',
-                        value: [],
-                      },
-                    ],
-                  }),
-                );
-              }}
-            >
-              {(setOpen) => (
-                <button
-                  onClick={() => setOpen((p) => !p)}
-                  type="button"
-                  className="flex items-center gap-1 rounded-md border border-border bg-card p-1 px-2 text-sm font-medium leading-none"
-                >
-                  <FilterIcon size={12} /> Add filter
-                </button>
-              )}
-            </PropertiesCombobox>
-          )}
-
-          {showSegment && chartEvent.segment.startsWith('property_') && (
-            <EventPropertiesCombobox event={chartEvent} />
-          )}
-        </div>
-      )}
-
-      {/* Filters - only for events */}
-      {chartEvent && !isSelectManyEvents && <FiltersList event={chartEvent} />}
+    <div ref={setNodeRef} style={style} {...attributes}>
+      <ReportSeriesItem
+        event={event}
+        index={index}
+        showSegment={showSegment}
+        showAddFilter={showAddFilter}
+        isSelectManyEvents={isSelectManyEvents}
+        renderDragHandle={(index) => (
+          <button className="cursor-grab active:cursor-grabbing" {...listeners}>
+            <ColorSquare className="relative">
+              <HandIcon className="size-3 opacity-0 scale-50 group-hover:opacity-100 group-hover:scale-100 transition-all absolute inset-1" />
+              <span className="block group-hover:opacity-0 group-hover:scale-0 transition-all">
+                {alphabetIds[index]}
+              </span>
+            </ColorSquare>
+          </button>
+        )}
+        {...props}
+      />
     </div>
   );
 }
@@ -161,12 +124,23 @@ export function ReportSeries() {
     projectId,
   });
 
-  const showSegment = !['retention', 'funnel'].includes(chartType);
-  const showAddFilter = !['retention'].includes(chartType);
-  const showDisplayNameInput = !['retention'].includes(chartType);
+  const showSegment = !['retention', 'funnel', 'sankey'].includes(chartType);
+  const showAddFilter = !['retention', 'sankey'].includes(chartType);
+  const showDisplayNameInput = !['retention', 'sankey'].includes(chartType);
+  const options = useSelector((state) => state.report.options);
+  const isSankey = chartType === 'sankey';
   const isAddEventDisabled =
     (chartType === 'retention' || chartType === 'conversion') &&
     selectedSeries.length >= 2;
+  const isSankeyEventLimitReached =
+    isSankey &&
+    options &&
+    ((options.type === 'sankey' &&
+      options.mode === 'between' &&
+      selectedSeries.length >= 2) ||
+      (options.type === 'sankey' &&
+        options.mode !== 'between' &&
+        selectedSeries.length >= 1));
   const dispatchChangeEvent = useDebounceFn((event: IChartEventItem) => {
     dispatch(changeEvent(event));
   });
@@ -218,7 +192,8 @@ export function ReportSeries() {
   const showFormula =
     chartType !== 'conversion' &&
     chartType !== 'funnel' &&
-    chartType !== 'retention';
+    chartType !== 'retention' &&
+    chartType !== 'sankey';
 
   return (
     <div>
@@ -239,7 +214,7 @@ export function ReportSeries() {
               const isFormula = event.type === 'formula';
 
               return (
-                <SortableSeries
+                <SortableReportSeriesItem
                   key={event.id}
                   event={event}
                   index={index}
@@ -273,6 +248,52 @@ export function ReportSeries() {
                             }}
                           />
                         )}
+                        {(() => {
+                          const referencedAlphaIds = getReferencedAlphaIds(
+                            event.formula,
+                            index,
+                          );
+                          if (referencedAlphaIds.length === 0) {
+                            return null;
+                          }
+                          const hideSeries = event.hideSeries ?? [];
+                          return (
+                            <div className="flex flex-wrap gap-x-3 gap-y-1.5 pt-1">
+                              {referencedAlphaIds.map((alphaId) => {
+                                const isHidden = hideSeries.includes(alphaId);
+                                return (
+                                  <label
+                                    key={alphaId}
+                                    className="flex items-center gap-1.5 text-xs font-medium select-none cursor-pointer"
+                                  >
+                                    <Checkbox
+                                      checked={isHidden}
+                                      onCheckedChange={(checked) => {
+                                        const next = checked
+                                          ? [
+                                              ...hideSeries.filter(
+                                                (id) => id !== alphaId,
+                                              ),
+                                              alphaId,
+                                            ]
+                                          : hideSeries.filter(
+                                              (id) => id !== alphaId,
+                                            );
+                                        dispatch(
+                                          changeEvent({
+                                            ...event,
+                                            hideSeries: next,
+                                          }),
+                                        );
+                                      }}
+                                    />
+                                    Hide series {alphaId} from chart
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
                       </div>
                       <ReportEventMore onClick={handleMore(event)} />
                     </>
@@ -348,13 +369,14 @@ export function ReportSeries() {
                       <ReportEventMore onClick={handleMore(event)} />
                     </>
                   )}
-                </SortableSeries>
+                </SortableReportSeriesItem>
               );
             })}
 
             <div className="flex gap-2">
               <ComboboxEvents
-                disabled={isAddEventDisabled}
+                className="flex-1"
+                disabled={isAddEventDisabled || isSankeyEventLimitReached}
                 value={''}
                 searchable
                 onChange={(value) => {
@@ -386,13 +408,13 @@ export function ReportSeries() {
                 }}
                 placeholder="Select event"
                 items={eventNames}
-                className="flex-1"
               />
               {showFormula && (
                 <Button
                   type="button"
                   variant="outline"
                   icon={PiIcon}
+                  className="flex-1 justify-start text-left px-4"
                   onClick={() => {
                     dispatch(
                       addSerie({
@@ -402,9 +424,9 @@ export function ReportSeries() {
                       }),
                     );
                   }}
-                  className="px-4"
                 >
                   Add Formula
+                  <PlusIcon className="size-4 ml-auto text-muted-foreground" />
                 </Button>
               )}
             </div>

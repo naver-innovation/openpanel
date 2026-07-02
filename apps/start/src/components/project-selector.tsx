@@ -1,3 +1,12 @@
+import type { IServiceOrganization } from '@openpanel/db';
+import { Link, useRouter } from '@tanstack/react-router';
+import {
+  Building2Icon,
+  CheckIcon,
+  ChevronsUpDownIcon,
+  PlusIcon,
+} from 'lucide-react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -10,18 +19,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAppParams } from '@/hooks/use-app-params';
-import { useRouter } from '@tanstack/react-router';
-import { Link } from '@tanstack/react-router';
-import {
-  Building2Icon,
-  CheckIcon,
-  ChevronsUpDownIcon,
-  PlusIcon,
-} from 'lucide-react';
-import { useState } from 'react';
-
+import { useOrganizationAccess } from '@/hooks/use-organization-access';
 import { pushModal } from '@/modals';
-import type { IServiceOrganization } from '@openpanel/db';
 
 interface ProjectSelectorProps {
   projects: Array<{ id: string; name: string; organizationId: string }>;
@@ -36,6 +35,7 @@ export default function ProjectSelector({
 }: ProjectSelectorProps) {
   const router = useRouter();
   const { organizationId, projectId } = useAppParams();
+  const { isAdmin } = useOrganizationAccess(organizationId);
   const [open, setOpen] = useState(false);
 
   const changeProject = (newProjectId: string) => {
@@ -69,16 +69,16 @@ export default function ProjectSelector({
   };
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu onOpenChange={setOpen} open={open}>
       <DropdownMenuTrigger asChild>
         <Button
-          size={'sm'}
-          variant="outline"
-          role="combobox"
           aria-expanded={open}
           className="flex min-w-0 flex-1 items-center justify-start"
+          role="combobox"
+          size={'sm'}
+          variant="outline"
         >
-          <Building2Icon size={16} className="shrink-0" />
+          <Building2Icon className="shrink-0" size={16} />
           <span className="mx-2 truncate">
             {projectId
               ? projects.find((p) => p.id === projectId)?.name
@@ -108,26 +108,28 @@ export default function ProjectSelector({
           {projects.length > 10 && (
             <DropdownMenuItem asChild>
               <Link
-                to={'/$organizationId'}
                 params={{
                   organizationId,
                 }}
+                to={'/$organizationId'}
               >
                 All projects
               </Link>
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem
-            className="text-emerald-600"
-            onClick={() => {
-              pushModal('AddProject');
-            }}
-          >
-            Create new project
-            <DropdownMenuShortcut>
-              <PlusIcon size={16} />
-            </DropdownMenuShortcut>
-          </DropdownMenuItem>
+          {isAdmin && (
+            <DropdownMenuItem
+              className="text-emerald-600"
+              onClick={() => {
+                pushModal('AddProject');
+              }}
+            >
+              Create new project
+              <DropdownMenuShortcut>
+                <PlusIcon size={16} />
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
+          )}
         </DropdownMenuGroup>
         {!!organizations && (
           <>
@@ -148,11 +150,13 @@ export default function ProjectSelector({
                 </DropdownMenuItem>
               ))}
               <DropdownMenuSeparator />
-              <DropdownMenuItem disabled>
-                New organization
-                <DropdownMenuShortcut>
-                  <PlusIcon size={16} />
-                </DropdownMenuShortcut>
+              <DropdownMenuItem asChild>
+                <Link to={'/onboarding/project'}>
+                  New organization
+                  <DropdownMenuShortcut>
+                    <PlusIcon size={16} />
+                  </DropdownMenuShortcut>
+                </Link>
               </DropdownMenuItem>
             </DropdownMenuGroup>
           </>
