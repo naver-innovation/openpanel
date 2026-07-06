@@ -61,6 +61,8 @@ jobs:
           context: .
           file: apps/api/Dockerfile
           push: true
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
@@ -94,6 +96,8 @@ jobs:
           context: .
           file: apps/worker/Dockerfile
           push: true
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
@@ -127,6 +131,8 @@ jobs:
           context: .
           file: apps/start/Dockerfile
           push: true
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
