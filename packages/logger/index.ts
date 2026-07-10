@@ -1,17 +1,11 @@
 import * as HyperDX from '@hyperdx/node-opentelemetry';
-import { DateTime } from 'luxon';
-import pino, {
-  type Bindings,
-  type ChildLoggerOptions,
-  type Logger,
-} from 'pino';
+import pino, { type Logger } from 'pino';
+import { getLogTimestamp } from './log-time';
 
 export type ILogger = Logger;
 
 const logLevel = process.env.LOG_LEVEL ?? 'info';
 const silent = process.env.LOG_SILENT === 'true';
-const LOG_TZ = process.env.LOG_TZ ?? process.env.TZ ?? 'UTC';
-const REQUEST_ID_LOG_FIELD = 'reqId';
 
 // Substring match (lowercased). Catches camelCase, snake_case, prefixed and
 // suffixed variants in one entry - e.g. 'token' covers accessToken,
@@ -39,13 +33,6 @@ const SENSITIVE_KEY_PATTERNS = [
 ];
 
 const MAX_REDACT_DEPTH = 5;
-
-function getLogTimestamp() {
-  const timestamp = DateTime.now().setZone(LOG_TZ);
-  return (timestamp.isValid ? timestamp : DateTime.utc()).toFormat(
-    'yyyy-MM-dd HH:mm:ss.SSSZZ',
-  );
-}
 
 function redactSensitive(value: unknown, depth = 0): unknown {
   if (value instanceof Error) {
@@ -82,58 +69,7 @@ function redactSensitive(value: unknown, depth = 0): unknown {
   return result;
 }
 
-interface CreateLoggerOptions {
-  name: string;
-  /** Re-label top-level Pino request correlation ids for opted-in services. */
-  reqIdAlias?: string;
-}
-
-function aliasReqIdField(value: unknown, reqIdAlias?: string): unknown {
-  if (
-    !reqIdAlias ||
-    value instanceof Error ||
-    value instanceof Date ||
-    Array.isArray(value) ||
-    value === null ||
-    typeof value !== 'object'
-  ) {
-    return value;
-  }
-
-  const record = value as Record<string, unknown>;
-  if (!Object.hasOwn(record, REQUEST_ID_LOG_FIELD)) {
-    return value;
-  }
-
-  const { [REQUEST_ID_LOG_FIELD]: reqId, ...result } = record;
-  if (!Object.hasOwn(result, reqIdAlias)) {
-    result[reqIdAlias] = reqId;
-  }
-  return result;
-}
-
-function aliasLoggerChild<CustomLevels extends string = never>(
-  logger: Logger<CustomLevels>,
-  reqIdAlias: string
-): Logger<CustomLevels> {
-  const child = logger.child.bind(logger);
-  logger.child = (<ChildCustomLevels extends string = never>(
-    bindings: Bindings,
-    options?: ChildLoggerOptions<ChildCustomLevels>
-  ) => {
-    const childLogger = child<ChildCustomLevels>(
-      aliasReqIdField(bindings, reqIdAlias) as Bindings,
-      options
-    );
-    return aliasLoggerChild(childLogger, reqIdAlias);
-  }) as Logger<CustomLevels>['child'];
-  return logger;
-}
-
-export function createLogger({
-  name,
-  reqIdAlias,
-}: CreateLoggerOptions): ILogger {
+export function createLogger({ name }: { name: string }): ILogger {
   const service = [process.env.LOG_PREFIX, name, process.env.NODE_ENV ?? 'dev']
     .filter(Boolean)
     .join('-');
@@ -141,17 +77,14 @@ export function createLogger({
   const useHyperDX = !!process.env.HYPERDX_API_KEY;
   const usePretty = !useHyperDX && process.env.NODE_ENV !== 'production';
 
-  const logger = pino({
+  return pino({
     name: service,
     level: logLevel,
     enabled: !silent,
     timestamp: () => `,"time":"${getLogTimestamp()}"`,
     formatters: {
       log: (obj) => {
-        return redactSensitive(aliasReqIdField(obj, reqIdAlias)) as Record<
-          string,
-          unknown
-        >;
+        return redactSensitive(obj) as Record<string, unknown>;
       },
     },
     mixin: useHyperDX ? HyperDX.getPinoMixinFunction : undefined,
@@ -171,6 +104,4 @@ export function createLogger({
           }
         : undefined,
   });
-
-  return reqIdAlias ? aliasLoggerChild(logger, reqIdAlias) : logger;
 }

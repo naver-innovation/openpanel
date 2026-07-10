@@ -97,7 +97,7 @@ export async function incomingEvent(
   const properties = body.properties ?? {};
   const reqId = headers['request-id'] ?? 'unknown';
   const logger = baseLogger.child({
-    reqId,
+    __wasl_op_trace_id: reqId,
   });
   const getProperty = (name: string): string | undefined => {
     // replace thing is just for older sdks when we didn't have `__`
