@@ -1,12 +1,11 @@
 import * as HyperDX from '@hyperdx/node-opentelemetry';
-import { DateTime } from 'luxon';
 import pino, { type Logger } from 'pino';
+import { getLogTimestamp } from './log-time';
 
 export type ILogger = Logger;
 
 const logLevel = process.env.LOG_LEVEL ?? 'info';
 const silent = process.env.LOG_SILENT === 'true';
-const LOG_TZ = process.env.LOG_TZ ?? process.env.TZ ?? 'UTC';
 
 // Substring match (lowercased). Catches camelCase, snake_case, prefixed and
 // suffixed variants in one entry - e.g. 'token' covers accessToken,
@@ -34,13 +33,6 @@ const SENSITIVE_KEY_PATTERNS = [
 ];
 
 const MAX_REDACT_DEPTH = 5;
-
-function getLogTimestamp() {
-  const timestamp = DateTime.now().setZone(LOG_TZ);
-  return (timestamp.isValid ? timestamp : DateTime.utc()).toFormat(
-    'yyyy-MM-dd HH:mm:ss.SSSZZ',
-  );
-}
 
 function redactSensitive(value: unknown, depth = 0): unknown {
   if (value instanceof Error) {
