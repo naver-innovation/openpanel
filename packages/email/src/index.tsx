@@ -12,6 +12,17 @@ export * from './unsubscribe';
 
 const FROM = process.env.EMAIL_SENDER ?? 'hello@openpanel.dev';
 
+function maskEmail(email: string) {
+  const parts = email.split('@');
+  const [localPart, domain] = parts;
+
+  if (parts.length !== 2 || !localPart || !domain || /\s/.test(email)) {
+    return '[REDACTED]';
+  }
+
+  return `${localPart.charAt(0)}***@${domain}`;
+}
+
 export type EmailData<T extends TemplateKey> = z.infer<Templates[T]['schema']>;
 export type EmailTemplate = keyof Templates;
 
@@ -42,7 +53,10 @@ export async function sendEmail<T extends TemplateKey>(
   const props = template.schema.safeParse(data);
 
   if (!props.success) {
-    console.error('Failed to parse data', props.error);
+    console.error('Failed to parse email data', {
+      templateKey,
+      reason: 'invalid_template_data',
+    });
     return null;
   }
 
@@ -57,9 +71,12 @@ export async function sendEmail<T extends TemplateKey>(
     });
 
     if (unsubscribed) {
-      console.log(
-        `Skipping email to ${to} - unsubscribed from ${template.category}`,
-      );
+      console.log('Email delivery skipped', {
+        templateKey,
+        to: maskEmail(to),
+        category: template.category,
+        reason: 'unsubscribed',
+      });
       return null;
     }
   }
@@ -88,18 +105,22 @@ export async function sendEmail<T extends TemplateKey>(
         headers,
       });
       return res;
-    } catch (error) {
-      console.error('Failed to send email via SMTP', error);
+    } catch {
+      console.error('Email delivery failed', {
+        templateKey,
+        to: maskEmail(to),
+        reason: 'smtp_provider_error',
+      });
       return null;
     }
   }
 
   if (!process.env.RESEND_API_KEY) {
-    console.log('No SMTP_HOST or RESEND_API_KEY found, here is the data');
-    console.log('Template:', template);
-    console.log('Subject: ', subject);
-    console.log('To:      ', to);
-    console.log('Data:    ', JSON.stringify(data, null, 2));
+    console.warn('Email delivery skipped', {
+      templateKey,
+      to: maskEmail(to),
+      reason: 'resend_api_key_missing',
+    });
     return null;
   }
 
@@ -117,8 +138,13 @@ export async function sendEmail<T extends TemplateKey>(
       throw new Error(res.error.message);
     }
     return res;
-  } catch (error) {
-    console.error('Failed to send email via Resend', error);
+  } catch {
+    // SECURITY(WASL): Do not log the original provider error.
+    console.error('Email delivery failed', {
+      templateKey,
+      to: maskEmail(to),
+      reason: 'provider_error',
+    });
     return null;
   }
 }

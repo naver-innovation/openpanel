@@ -90,7 +90,7 @@ export async function incomingEvent(
   const properties = body.properties ?? {};
   const reqId = headers['request-id'] ?? 'unknown';
   const logger = baseLogger.child({
-    reqId,
+    __wasl_op_trace_id: reqId,
     ...(meta
       ? { kafkaPartition: meta.partition, kafkaOffset: meta.offset }
       : {}),

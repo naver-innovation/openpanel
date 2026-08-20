@@ -86,6 +86,7 @@ export async function buildApp(
     maxParamLength: 15_000,
     bodyLimit: 1_048_576 * 500,
     disableRequestLogging: true,
+    requestIdLogLabel: '__wasl_op_trace_id',
     genReqId: (req) =>
       req.headers['request-id']
         ? String(req.headers['request-id'])
