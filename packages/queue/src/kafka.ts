@@ -1,6 +1,7 @@
 import { createLogger } from '@openpanel/logger';
 import { type Consumer, Kafka, logLevel, type Producer } from 'kafkajs';
 import type { EventsQueuePayloadIncomingEvent } from './queues';
+import { getKafkaSecurityConfig } from './kafka.security';
 
 export type { KafkaMessage } from 'kafkajs';
 
@@ -96,6 +97,7 @@ const getKafka = (): Kafka => {
       logLevel: logLevel.WARN,
       requestTimeout: KAFKA_REQUEST_TIMEOUT_MS,
       connectionTimeout: KAFKA_CONNECTION_TIMEOUT_MS,
+      ...getKafkaSecurityConfig(),
     });
   }
   return kafka;
