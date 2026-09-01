@@ -51,7 +51,7 @@ function EventRuleItem({
   onChange,
   onRemove,
 }: EventRuleItemProps) {
-  const eventNames = useEventNames({ projectId, anyEvents: false });
+  const eventNames = useEventNames({ projectId, anyEvents: true });
 
   const addFilter = (action: {
     value: string;
@@ -135,7 +135,7 @@ function EventRuleItem({
         </>
       )}
       <div className="p-4 border-t">
-        <PropertiesCombobox onSelect={addFilter} mode="events">
+        <PropertiesCombobox onSelect={addFilter} categories={['event']}>
           {(setOpen) => (
             <Button
               variant="outline"

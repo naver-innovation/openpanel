@@ -11,6 +11,8 @@ import AddReference from './add-reference';
 import BillingSuccess from './billing-success';
 import type { ConfirmProps } from './confirm';
 import Confirm from './confirm';
+import ConfirmDeleteAccount from './confirm-delete-account';
+import ConfirmDeleteOrganization from './confirm-delete-organization';
 import CreateInvite from './create-invite';
 import DateRangerPicker from './date-ranger-picker';
 import DateTimePicker from './date-time-picker';
@@ -24,9 +26,11 @@ import EditMember from './edit-member';
 import EditReference from './edit-reference';
 import EditReport from './edit-report';
 import EventDetails from './event-details';
+import InsightDetails from './insight-details';
 import Instructions from './Instructions';
 import OverviewChartDetails from './overview-chart-details';
 import OverviewFilters from './overview-filters';
+import TableFilters from './table-filters';
 import PageDetails from './page-details';
 import RegenerateRecoveryCodes from './regenerate-recovery-codes';
 import RequestPasswordReset from './request-reset-password';
@@ -53,11 +57,14 @@ const modals = {
   EditEvent,
   EditMember,
   EventDetails,
+  InsightDetails,
   EditClient,
   AddProject,
   AddClient,
   AddImport,
   Confirm,
+  ConfirmDeleteAccount,
+  ConfirmDeleteOrganization,
   SaveReport,
   AddDashboard,
   EditDashboard,
@@ -75,6 +82,7 @@ const modals = {
   AddIntegration,
   AddNotificationRule,
   OverviewFilters,
+  TableFilters,
   CreateInvite,
   SelectBillingPlan,
   BillingSuccess,

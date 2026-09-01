@@ -4,7 +4,7 @@ import type { IChartEventFilter } from '@openpanel/validation';
 import { assocPath, last, mergeDeepRight, path, uniq } from 'ramda';
 import sqlstring from 'sqlstring';
 import { v4 as uuid } from 'uuid';
-import { botBuffer, eventBuffer, sessionBuffer } from '../buffers';
+import { botBuffer, eventBuffer } from '../buffers';
 import {
   ch,
   chQuery,
@@ -17,6 +17,7 @@ import type { EventMeta, Prisma } from '../prisma-client';
 import { db } from '../prisma-client';
 import { createSqlBuilder, type SqlBuilderObject } from '../sql-builder';
 import { getEventFiltersWhereClause } from './chart.service';
+import { buildFilterWhere } from './filter-where.service';
 import type { IServiceProfile, IServiceUpsertProfile } from './profile.service';
 import {
   getProfileById,
@@ -332,6 +333,7 @@ export async function getEvents(
         firstName: '',
         lastName: '',
         createdAt: new Date(),
+        lastSeenAt: new Date(),
         projectId,
         isExternal: false,
         properties: {},
@@ -353,6 +355,16 @@ export async function getEvents(
   return events.map(transformEvent);
 }
 
+/**
+ * Persist an event to ClickHouse (via the buffer) and upsert the profile
+ * on session boundaries.
+ *
+ * Does NOT touch the session-row buffer. Callers producing non-session_start
+ * / session_end events are responsible for calling `sessionBuffer.ingest()`
+ * before this. `incoming-event.ts` is the only such caller today; everywhere
+ * else (session_start, session_end) the session-row update is correctly a
+ * no-op anyway.
+ */
 export async function createEvent(payload: IServiceCreateEventPayload) {
   if (!payload.profileId && payload.deviceId) {
     payload.profileId = payload.deviceId;
@@ -394,7 +406,9 @@ export async function createEvent(payload: IServiceCreateEventPayload) {
     groups: payload.groups ?? [],
   };
 
-  const promises = [sessionBuffer.add(event), eventBuffer.add(event)];
+  eventBuffer.add(event);
+
+  const promises: Promise<unknown>[] = [];
 
   if (payload.profileId) {
     const profile: IServiceUpsertProfile = {
@@ -421,10 +435,23 @@ export async function createEvent(payload: IServiceCreateEventPayload) {
       },
     };
 
-    if (
-      profile.isExternal ||
-      (profile.isExternal === false && payload.name === 'session_start')
-    ) {
+    // Only upsert the profile on session boundaries.
+    // - session_start covers fresh activity.
+    // - session_end is synthesized server-side by the worker.
+    // Identified users' explicit profile writes (op.identify(), op.setProfile())
+    // go through the controller path and are not affected by this branch.
+    //
+    // `isFromEvent=true` activates profile-buffer's cache shortcut: if the
+    // profile is in the 1h Redis cache (i.e. recently flushed), the add is
+    // skipped. Trade-off: profile.last_seen_at granularity is capped at the
+    // cache TTL (~1h) rather than per-session. We accept this because
+    // (a) profile-buffer was the leading indicator in the 2026-05-20 buildup
+    //     and was processing ~2 writes per session per anonymous user;
+    // (b) the bulk of those writes carried no new information (anonymous
+    //     profile data is event-derived and stable across a session);
+    // (c) recency queries should derive from event timestamps, not from
+    //     profile.last_seen_at.
+    if (payload.name === 'session_start' || payload.name === 'session_end') {
       promises.push(upsertProfile(profile, true));
     }
   }
@@ -472,7 +499,7 @@ export async function getEventList(options: GetEventListOptions) {
   } = options;
   const { sb, getSql, join } = createSqlBuilder();
 
-  const MAX_DATE_INTERVAL_IN_DAYS = 365;
+  const MAX_DATE_INTERVAL_IN_DAYS = 365 * 5;
   // Cap the date interval to prevent infinity
   const safeDateIntervalInDays = Math.min(
     dateIntervalInDays,
@@ -638,7 +665,7 @@ export async function getEventList(options: GetEventListOptions) {
   if (filters) {
     sb.where = {
       ...sb.where,
-      ...getEventFiltersWhereClause(filters, projectId),
+      ...getEventFiltersWhereClause(filters, projectId, 'e'),
     };
 
     // Join profiles table if any filter uses profile fields
@@ -722,7 +749,7 @@ export async function getEventsCount({
   if (filters) {
     sb.where = {
       ...sb.where,
-      ...getEventFiltersWhereClause(filters, projectId),
+      ...getEventFiltersWhereClause(filters, projectId, 'e'),
     };
 
     // Join profiles table if any filter uses profile fields
@@ -1277,11 +1304,12 @@ export interface QueryEventsInput {
   profileId?: string;
   profileIds?: string[];
   properties?: Record<string, string>;
+  filters?: IChartEventFilter[];
   limit?: number;
 }
 
 export async function queryEventsCore(
-  input: QueryEventsInput,
+  input: QueryEventsInput
 ): Promise<IClickhouseEvent[]> {
   const builder = clix(ch)
     .select<IClickhouseEvent>([])
@@ -1342,7 +1370,9 @@ export async function queryEventsCore(
 
   if (input.properties) {
     for (const [key, value] of Object.entries(input.properties)) {
-      builder.rawWhere(`properties[${sqlstring.escape(key)}] = ${sqlstring.escape(value)}`);
+      builder.rawWhere(
+        `properties[${sqlstring.escape(key)}] = ${sqlstring.escape(value)}`
+      );
     }
   }
 
@@ -1352,7 +1382,7 @@ export async function queryEventsCore(
   if (!input.sessionId) {
     const { startDate: start, endDate: end } = resolveDateRange(
       input.startDate,
-      input.endDate,
+      input.endDate
     );
     builder.where('created_at', 'BETWEEN', [
       clix.datetime(start),
@@ -1362,12 +1392,23 @@ export async function queryEventsCore(
     // If caller still wants to scope by date, honor it.
     const { startDate: start, endDate: end } = resolveDateRange(
       input.startDate,
-      input.endDate,
+      input.endDate
     );
     builder.where('created_at', 'BETWEEN', [
       clix.datetime(start),
       clix.datetime(end),
     ]);
+  }
+
+  if (input.filters?.length) {
+    const filterClauses = buildFilterWhere(input.filters, input.projectId, {
+      selfTable: 'events',
+      profileIdExpr: 'profile_id',
+      groupsExpr: 'groups',
+    });
+    for (const clause of Object.values(filterClauses)) {
+      builder.rawWhere(clause);
+    }
   }
 
   return builder.limit(input.limit ?? 20).execute();

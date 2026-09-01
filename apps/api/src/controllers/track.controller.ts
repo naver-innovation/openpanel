@@ -1,18 +1,22 @@
-import { generateId, slug } from '@openpanel/common';
+import { generateId } from '@openpanel/common';
 import { generateDeviceId, parseUserAgent } from '@openpanel/common/server';
 import {
+  convertClickhouseDateToJs,
   getProfileById,
   getSalts,
   groupBuffer,
   replayBuffer,
+  SESSION_TIMEOUT_MS,
+  sessionBuffer,
   upsertProfile,
 } from '@openpanel/db';
 import { type GeoLocation, getGeoLocation } from '@openpanel/geo';
 import {
   type EventsQueuePayloadIncomingEvent,
   getEventsGroupQueueShard,
+  produceIncomingEvent,
+  shouldUseKafka,
 } from '@openpanel/queue';
-import { getRedisCache } from '@openpanel/redis';
 import type {
   IAssignGroupPayload,
   IDecrementPayload,
@@ -69,6 +73,29 @@ function getIdentity(body: ITrackHandlerPayload): IIdentifyPayload | undefined {
   return undefined;
 }
 
+const MAX_OVERRIDE_DEVICE_ID_LENGTH = 64;
+
+function sanitizeOverrideDeviceId(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > MAX_OVERRIDE_DEVICE_ID_LENGTH) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+// Resolve a caller-supplied device id from a track event's `properties.__deviceId`.
+export function getOverrideDeviceId(
+  body: ITrackHandlerPayload
+): string | undefined {
+  if (body.type !== 'track') {
+    return undefined;
+  }
+  return sanitizeOverrideDeviceId(body.payload?.properties?.__deviceId);
+}
+
 export function getTimestamp(
   timestamp: FastifyRequest['timestamp'],
   payload: ITrackHandlerPayload['payload']
@@ -117,7 +144,6 @@ interface TrackContext {
   identity?: IIdentifyPayload;
   deviceId: string;
   sessionId: string;
-  session?: EventsQueuePayloadIncomingEvent['payload']['session'];
   geo: GeoLocation;
 }
 
@@ -147,11 +173,7 @@ async function buildContext(
     validatedBody.payload.profileId = profileId;
   }
 
-  const overrideDeviceId =
-    validatedBody.type === 'track' &&
-    typeof validatedBody.payload?.properties?.__deviceId === 'string'
-      ? validatedBody.payload?.properties.__deviceId
-      : undefined;
+  const overrideDeviceId = getOverrideDeviceId(validatedBody);
 
   // Get geo location (needed for track and identify)
   const [geo, salts] = await Promise.all([getGeoLocation(ip), getSalts()]);
@@ -162,6 +184,7 @@ async function buildContext(
     ua,
     salts,
     overrideDeviceId,
+    eventTimeMs: timestamp.timestamp,
   });
 
   return {
@@ -176,7 +199,6 @@ async function buildContext(
     identity,
     deviceId: deviceIdResult.deviceId,
     sessionId: deviceIdResult.sessionId,
-    session: deviceIdResult.session,
     geo,
   };
 }
@@ -185,8 +207,7 @@ async function handleTrack(
   payload: ITrackPayload,
   context: TrackContext
 ): Promise<void> {
-  const { projectId, deviceId, geo, headers, timestamp, sessionId, session } =
-    context;
+  const { projectId, deviceId, geo, headers, timestamp, sessionId } = context;
 
   const uaInfo = parseUserAgent(headers['user-agent'], payload.properties);
   const groupId = uaInfo.isServer
@@ -194,16 +215,6 @@ async function handleTrack(
       ? `${projectId}:${payload.profileId}`
       : undefined
     : deviceId;
-  const jobId = [
-    slug(payload.name),
-    timestamp.value,
-    projectId,
-    deviceId,
-    groupId,
-  ]
-    .filter(Boolean)
-    .join('-');
-
   const promises: Promise<unknown>[] = [];
 
   // If we have more than one property in the identity object, we should identify the user
@@ -212,28 +223,34 @@ async function handleTrack(
     promises.push(handleIdentify(context.identity, context));
   }
 
-  promises.push(
-    getEventsGroupQueueShard(groupId || generateId()).add({
-      orderMs: timestamp.value,
-      data: {
-        projectId,
-        headers,
-        event: {
-          ...payload,
-          groups: payload.groups ?? [],
-          timestamp: timestamp.value,
-          isTimestampFromThePast: timestamp.isFromPast,
-        },
-        uaInfo,
-        geo,
-        deviceId,
-        sessionId,
-        session,
-      },
-      groupId,
-      jobId,
-    })
-  );
+  const queueData: EventsQueuePayloadIncomingEvent['payload'] = {
+    projectId,
+    headers,
+    event: {
+      ...payload,
+      groups: payload.groups ?? [],
+      timestamp: timestamp.value,
+      isTimestampFromThePast: timestamp.isFromPast,
+    },
+    uaInfo,
+    geo,
+    deviceId,
+    sessionId,
+  };
+
+  const partitionKey = groupId || generateId();
+
+  if (shouldUseKafka()) {
+    promises.push(produceIncomingEvent(queueData, partitionKey));
+  } else {
+    promises.push(
+      getEventsGroupQueueShard(partitionKey).add({
+        orderMs: timestamp.value,
+        data: queueData,
+        groupId,
+      })
+    );
+  }
 
   await Promise.all(promises);
 }
@@ -315,17 +332,19 @@ async function handleDecrement(
   await adjustProfileProperty(payload, context.projectId, -1);
 }
 
-async function handleReplay(
+// Replay only needs the server-issued session id (the SDK echoes it back). Trust
+// it — scoped to the authed project, unguessable, same trust level as event data.
+export async function handleReplay(
   payload: IReplayPayload,
-  context: TrackContext
+  { projectId, sessionId }: { projectId: string; sessionId: string | undefined }
 ): Promise<void> {
-  if (!context.sessionId) {
+  if (!sessionId) {
     throw new HttpError('Session ID is required for replay', { status: 400 });
   }
 
   const row = {
-    project_id: context.projectId,
-    session_id: context.sessionId,
+    project_id: projectId,
+    session_id: sessionId,
     chunk_index: payload.chunk_index,
     started_at: payload.started_at,
     ended_at: payload.ended_at,
@@ -400,9 +419,22 @@ export async function handler(
     case 'decrement':
       await handleDecrement(validatedBody.payload, context);
       break;
-    case 'replay':
-      await handleReplay(validatedBody.payload, context);
+    case 'replay': {
+      // BACKCOMPAT(replay-sessionid): TEMPORARY legacy branch, remove when new SDK is fully deployed
+      if (!validatedBody.payload.sessionId) {
+        await handleReplay(validatedBody.payload, {
+          projectId: context.projectId,
+          sessionId: context.sessionId,
+        });
+        break;
+      }
+
+      await handleReplay(validatedBody.payload, {
+        projectId: context.projectId,
+        sessionId: validatedBody.payload.sessionId,
+      });
       break;
+    }
     case 'group':
       await handleGroup(validatedBody.payload, context);
       break;
@@ -457,39 +489,45 @@ export async function fetchDeviceId(
   });
 
   try {
-    const multi = getRedisCache().multi();
-    multi.hget(
-      `bull:sessions:sessionEnd:${projectId}:${currentDeviceId}`,
-      'data'
-    );
-    multi.hget(
-      `bull:sessions:sessionEnd:${projectId}:${previousDeviceId}`,
-      'data'
-    );
-    const res = await multi.exec();
-    if (res?.[0]?.[1]) {
-      const data = JSON.parse(res?.[0]?.[1] as string);
-      const sessionId = data.payload.sessionId;
+    const [current, previous] = await Promise.all([
+      sessionBuffer.getExistingSession({
+        projectId,
+        deviceId: currentDeviceId,
+      }),
+      sessionBuffer.getExistingSession({
+        projectId,
+        deviceId: previousDeviceId,
+      }),
+    ]);
+
+    // Blob has no TTL — only treat the session as "current" if its last
+    // event is within the idle window. Otherwise the SDK should ask the
+    // server to start a fresh session id on the next event.
+    const now = Date.now();
+    const isLive = (s: typeof current) =>
+      !!s &&
+      now - convertClickhouseDateToJs(s.ended_at).getTime() <
+        SESSION_TIMEOUT_MS;
+
+    if (current && isLive(current)) {
       return reply.status(200).send({
         deviceId: currentDeviceId,
-        sessionId,
+        sessionId: current.id,
         message: 'current session exists for this device id',
       });
     }
 
-    if (res?.[1]?.[1]) {
-      const data = JSON.parse(res?.[1]?.[1] as string);
-      const sessionId = data.payload.sessionId;
+    if (previous && isLive(previous)) {
       return reply.status(200).send({
         deviceId: previousDeviceId,
-        sessionId,
+        sessionId: previous.id,
         message: 'previous session exists for this device id',
       });
     }
   } catch (error) {
     request.log.error(
       { err: error },
-      'Error getting session end GET /track/device-id',
+      'Error getting session end GET /track/device-id'
     );
   }
 

@@ -27,6 +27,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # Apps
 COPY apps/api/package.json ./apps/api/
 # Packages
+COPY packages/ai/package.json packages/ai/
 COPY packages/db/package.json packages/db/
 COPY packages/geo/package.json packages/geo/
 COPY packages/mcp/package.json packages/mcp/
@@ -96,6 +97,7 @@ COPY --from=prod /app/node_modules ./node_modules
 COPY --from=build /app/apps/api ./apps/api
 
 # Packages
+COPY --from=build /app/packages/ai ./packages/ai
 COPY --from=build /app/packages/db ./packages/db
 COPY --from=build /app/packages/geo ./packages/geo
 COPY --from=build /app/packages/mcp ./packages/mcp
@@ -116,6 +118,11 @@ COPY --from=build /app/tooling/typescript ./tooling/typescript
 RUN pnpm db:codegen
 
 WORKDIR /app/apps/api
+
+# Drop a diagnostic report on fatal errors / SIGUSR2 so the next native
+# segfault (exit 139) leaves a stack we can read. Override per-environment
+# by setting NODE_OPTIONS in the swarm stack file.
+ENV NODE_OPTIONS="--report-on-fatalerror --report-on-signal --report-directory=/tmp"
 
 EXPOSE 3000
 

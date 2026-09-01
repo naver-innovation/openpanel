@@ -1,10 +1,15 @@
 import { z } from 'zod';
 
-import { db, getReportById, getReportsByDashboardId } from '@openpanel/db';
+import {
+  db,
+  getDashboardById,
+  getReportById,
+  getReportsByDashboardId,
+} from '@openpanel/db';
 import { zReport } from '@openpanel/validation';
 
 import { getProjectAccess } from '../access';
-import { TRPCAccessError } from '../errors';
+import { TRPCForbiddenError, TRPCNotFoundError } from '../errors';
 import { createTRPCRouter, protectedProcedure } from '../trpc';
 
 export const reportRouter = createTRPCRouter({
@@ -15,7 +20,11 @@ export const reportRouter = createTRPCRouter({
         projectId: z.string(),
       }),
     )
-    .query(async ({ input: { dashboardId, projectId }, ctx }) => {
+    .query(async ({ input: { dashboardId, projectId } }) => {
+      const dashboard = await getDashboardById(dashboardId, projectId);
+      if (!dashboard) {
+        throw new TRPCNotFoundError('Dashboard not found');
+      }
       return getReportsByDashboardId(dashboardId);
     }),
   create: protectedProcedure
@@ -38,7 +47,7 @@ export const reportRouter = createTRPCRouter({
       });
 
       if (!access) {
-        throw TRPCAccessError('You do not have access to this project');
+        throw new TRPCForbiddenError('You do not have access to this project');
       }
 
       return db.report.create({
@@ -47,6 +56,7 @@ export const reportRouter = createTRPCRouter({
           dashboardId,
           name: report.name,
           events: report.series,
+          globalFilters: report.globalFilters ?? [],
           interval: report.interval,
           breakdowns: report.breakdowns,
           chartType: report.chartType,
@@ -83,7 +93,7 @@ export const reportRouter = createTRPCRouter({
       });
 
       if (!access) {
-        throw TRPCAccessError('You do not have access to this project');
+        throw new TRPCForbiddenError('You do not have access to this project');
       }
 
       return db.report.update({
@@ -93,6 +103,7 @@ export const reportRouter = createTRPCRouter({
         data: {
           name: report.name,
           events: report.series,
+          globalFilters: report.globalFilters ?? [],
           interval: report.interval,
           breakdowns: report.breakdowns,
           chartType: report.chartType,
@@ -128,7 +139,7 @@ export const reportRouter = createTRPCRouter({
       });
 
       if (!access) {
-        throw TRPCAccessError('You do not have access to this project');
+        throw new TRPCForbiddenError('You do not have access to this project');
       }
 
       return db.report.delete({
@@ -156,7 +167,7 @@ export const reportRouter = createTRPCRouter({
       });
 
       if (!access) {
-        throw TRPCAccessError('You do not have access to this project');
+        throw new TRPCForbiddenError('You do not have access to this project');
       }
 
       return db.report.create({
@@ -165,6 +176,7 @@ export const reportRouter = createTRPCRouter({
           dashboardId: report.dashboardId,
           name: `Copy of ${report.name}`,
           events: report.events!,
+          globalFilters: report.globalFilters ?? [],
           interval: report.interval,
           breakdowns: report.breakdowns!,
           chartType: report.chartType,
@@ -188,7 +200,18 @@ export const reportRouter = createTRPCRouter({
       }),
     )
     .query(async ({ input: { reportId }, ctx }) => {
-      return getReportById(reportId);
+      const report = await getReportById(reportId);
+      if (!report) {
+        throw new TRPCNotFoundError('Report not found');
+      }
+      const access = await getProjectAccess({
+        userId: ctx.session.userId,
+        projectId: report.projectId,
+      });
+      if (!access) {
+        throw new TRPCForbiddenError('You do not have access to this project');
+      }
+      return report;
     }),
   updateLayout: protectedProcedure
     .input(
@@ -219,16 +242,16 @@ export const reportRouter = createTRPCRouter({
       });
 
       if (!access) {
-        throw TRPCAccessError('You do not have access to this project');
+        throw new TRPCForbiddenError('You do not have access to this project');
       }
 
       // Upsert the layout (create if doesn't exist, update if it does)
       return db.reportLayout.upsert({
         where: {
-          reportId: reportId,
+          reportId,
         },
         create: {
-          reportId: reportId,
+          reportId,
           x: layout.x,
           y: layout.y,
           w: layout.w,
@@ -264,7 +287,7 @@ export const reportRouter = createTRPCRouter({
       });
 
       if (!access) {
-        throw TRPCAccessError('You do not have access to this project');
+        throw new TRPCForbiddenError('You do not have access to this project');
       }
 
       return db.reportLayout.findMany({
@@ -292,7 +315,7 @@ export const reportRouter = createTRPCRouter({
       });
 
       if (!access) {
-        throw TRPCAccessError('You do not have access to this project');
+        throw new TRPCForbiddenError('You do not have access to this project');
       }
 
       // Delete all layout data for reports in this dashboard

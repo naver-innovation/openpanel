@@ -16,6 +16,11 @@ export const timeWindows = {
     label: 'Last hour',
     shortcut: 'H',
   },
+  last24h: {
+    key: 'last24h',
+    label: 'Last 24 hours',
+    shortcut: '4',
+  },
   today: {
     key: 'today',
     label: 'Today',
@@ -35,6 +40,11 @@ export const timeWindows = {
     key: '30d',
     label: 'Last 30 days',
     shortcut: 'T',
+  },
+  '3m': {
+    key: '3m',
+    label: 'Last 3 months',
+    shortcut: '3',
   },
   '6m': {
     key: '6m',
@@ -96,6 +106,87 @@ export const operators = {
   inCohort: 'In cohort',
   notInCohort: 'Not in cohort',
 } as const;
+
+// Compact labels for the operator trigger button. The comparison operators
+// have very long names ("Greater than or equal to"), so we show a symbol on
+// the trigger (reads naturally next to the value, e.g. "≥ 2019-01-01") and
+// surface the full `operators` text as a sub-line in the dropdown.
+export const operatorsShort: Record<keyof typeof operators, string> = {
+  is: 'Is',
+  isNot: 'Is not',
+  contains: 'Contains',
+  doesNotContain: 'Not contains',
+  startsWith: 'Starts with',
+  endsWith: 'Ends with',
+  regex: 'Regex',
+  isNull: 'Is null',
+  isNotNull: 'Is not null',
+  gt: '>',
+  lt: '<',
+  gte: '≥',
+  lte: '≤',
+  inCohort: 'In cohort',
+  notInCohort: 'Not in cohort',
+};
+
+// Cast type a filter value/column should be coerced to before comparing.
+// `string` (the default) keeps raw text comparison; the others wrap both sides
+// of the comparison in the matching ClickHouse cast (see packages/db
+// filter-cast.ts) so e.g. a date property compares as a date instead of
+// crashing `toFloat64('2019-01-01')`.
+export const filterValueTypes = {
+  string: 'Text',
+  number: 'Number',
+  date: 'Date',
+  datetime: 'Date & time',
+  boolean: 'Boolean',
+} as const;
+
+export type IFilterValueType = keyof typeof filterValueTypes;
+
+// Operators that make sense for each value type. The type constrains the
+// operator list in the UI (a Number can't `contains`, a Boolean only
+// `is`/`isNot`). Cohort operators are excluded everywhere — they're surfaced by
+// CohortFilterItem, not the standard operator select.
+const STRING_OPERATORS = [
+  'is',
+  'isNot',
+  'contains',
+  'doesNotContain',
+  'startsWith',
+  'endsWith',
+  'regex',
+  'isNull',
+  'isNotNull',
+] as const;
+
+const ORDERED_OPERATORS = [
+  'is',
+  'isNot',
+  'gt',
+  'gte',
+  'lt',
+  'lte',
+  'isNull',
+  'isNotNull',
+] as const;
+
+const BOOLEAN_OPERATORS = ['is', 'isNot', 'isNull', 'isNotNull'] as const;
+
+export function getOperatorsForType(
+  type?: IFilterValueType,
+): readonly (keyof typeof operators)[] {
+  switch (type) {
+    case 'number':
+    case 'date':
+    case 'datetime':
+      return ORDERED_OPERATORS;
+    case 'boolean':
+      return BOOLEAN_OPERATORS;
+    default:
+      return STRING_OPERATORS;
+  }
+}
 
 export const chartTypes = {
   linear: 'Linear',
@@ -179,15 +270,6 @@ export const alphabetIds = [
   'Z',
 ] as const;
 
-export const deprecated_timeRanges = {
-  '1h': '1h',
-  '24h': '24h',
-  '14d': '14d',
-  '1m': '1m',
-  '3m': '3m',
-  '1y': '1y',
-};
-
 export const metrics = {
   count: 'count',
   sum: 'sum',
@@ -207,6 +289,7 @@ export function isHourIntervalEnabledByRange(range: keyof typeof timeWindows) {
     isMinuteIntervalEnabledByRange(range) ||
     range === 'today' ||
     range === 'yesterday' ||
+    range === 'last24h' ||
     range === '7d'
   );
 }
@@ -217,12 +300,13 @@ export function getDefaultIntervalByRange(
   if (range === '30min' || range === 'lastHour') {
     return 'minute';
   }
-  if (range === 'today' || range === 'yesterday') {
+  if (range === 'today' || range === 'yesterday' || range === 'last24h') {
     return 'hour';
   }
   if (
     range === '7d' ||
     range === '30d' ||
+    range === '3m' ||
     range === 'lastMonth' ||
     range === 'monthToDate'
   ) {
@@ -511,8 +595,17 @@ export function getCountry(code?: string) {
   return countries[code as keyof typeof countries];
 }
 
+// Keys must match the template `category` in @openpanel/email. Each entry's
+// label + description drive the account email-preferences toggles.
 export const emailCategories = {
-  onboarding: 'Onboarding',
+  onboarding: {
+    label: 'Onboarding',
+    description: 'Get started tips and guidance emails',
+  },
+  weekly_digest: {
+    label: 'Weekly digest',
+    description: 'A weekly summary of your analytics with AI-surfaced insights',
+  },
 } as const;
 
 export type EmailCategory = keyof typeof emailCategories;

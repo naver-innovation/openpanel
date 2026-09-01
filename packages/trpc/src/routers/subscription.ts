@@ -18,13 +18,13 @@ import { zCheckout } from '@openpanel/validation';
 import { getCache } from '@openpanel/redis';
 import { subDays } from 'date-fns';
 import { z } from 'zod';
-import { TRPCAccessError, TRPCBadRequestError } from '../errors';
+import { TRPCForbiddenError, TRPCBadRequestError } from '../errors';
 import { createTRPCRouter, protectedProcedure } from '../trpc';
 
 async function requireAdmin(userId: string, organizationId: string) {
   const access = await getOrganizationAccess({ userId, organizationId });
   if (access?.role !== 'org:admin') {
-    throw TRPCAccessError('Only organization admins can manage billing');
+    throw new TRPCForbiddenError('Only organization admins can manage billing');
   }
 }
 
@@ -58,29 +58,27 @@ export const subscriptionRouter = createTRPCRouter({
         }),
       ]);
 
+      // An organization has at most one Polar subscription (we have no free
+      // tier in Polar — the free plan is handled on our side). So an upgrade or
+      // downgrade is an in-place product change, never a cancel + re-subscribe.
+      // Reactivate first if it was scheduled to cancel, otherwise change the
+      // product on the existing subscription.
       if (
         organization.subscriptionId &&
         organization.subscriptionStatus === 'active'
       ) {
-        const existingProduct = organization.subscriptionProductId
-          ? await getProduct(organization.subscriptionProductId)
-          : null;
-
-        // If the existing product is free, cancel the subscription and then jump to the checkout
-        if (existingProduct?.prices.some((p) => p.amountType === 'free')) {
-          await cancelSubscription(organization.subscriptionId);
-        } else {
-          if (organization.subscriptionCanceledAt) {
-            await reactivateSubscription(organization.subscriptionId);
-            return null;
-          }
-
-          await changeSubscription(
-            organization.subscriptionId,
-            input.productId,
-          );
+        if (organization.subscriptionCanceledAt) {
+          await reactivateSubscription(organization.subscriptionId);
           return null;
         }
+
+        // Already on this product — nothing to change.
+        if (organization.subscriptionProductId === input.productId) {
+          return null;
+        }
+
+        await changeSubscription(organization.subscriptionId, input.productId);
+        return null;
       }
 
       const checkout = await createCheckout({
@@ -161,7 +159,7 @@ export const subscriptionRouter = createTRPCRouter({
       await requireAdmin(ctx.session.userId, input.organizationId);
       const organization = await getOrganizationById(input.organizationId);
       if (!organization.subscriptionId) {
-        throw TRPCBadRequestError('Organization has no subscription');
+        throw new TRPCBadRequestError('Organization has no subscription');
       }
 
       const res = await cancelSubscription(organization.subscriptionId);
@@ -175,7 +173,7 @@ export const subscriptionRouter = createTRPCRouter({
       await requireAdmin(ctx.session.userId, input.organizationId);
       const organization = await getOrganizationById(input.organizationId);
       if (!organization.subscriptionCustomerId) {
-        throw TRPCBadRequestError('Organization has no subscription');
+        throw new TRPCBadRequestError('Organization has no subscription');
       }
 
       const portal = await createPortal({

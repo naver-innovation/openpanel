@@ -6,13 +6,14 @@ import { TABLE_NAMES, ch } from '../clickhouse/client';
 import { clix } from '../clickhouse/query-builder';
 import {
   buildInlineCohortJoin,
-  collectCohortIds,
+  collectBreakdownCohortIds,
   extractCohortId,
   fetchCohortsMetadata,
   getEventFiltersWhereClause,
   getSelectPropertyKey,
+  isKnownEventField,
 } from './chart.service';
-import { onlyReportEvents } from './reports.service';
+import { mergeGlobalFilters, onlyReportEvents } from './reports.service';
 
 export class ConversionService {
   constructor(private client: typeof ch) {}
@@ -23,6 +24,7 @@ export class ConversionService {
     endDate,
     options,
     series,
+    globalFilters,
     breakdowns = [],
     limit,
     interval,
@@ -30,15 +32,17 @@ export class ConversionService {
   }: Omit<IReportInput, 'range' | 'previous' | 'metric' | 'chartType'> & {
     timezone: string;
   }) {
+    series = mergeGlobalFilters(series, globalFilters);
     const funnelOptions = options?.type === 'funnel' ? options : undefined;
     const funnelGroup = funnelOptions?.funnelGroup;
     const funnelWindow = funnelOptions?.funnelWindow ?? 24;
     const group = funnelGroup === 'profile_id' ? 'profile_id' : 'session_id';
 
-    const allFilters = series.flatMap((s) =>
-      s.type === 'event' ? s.filters ?? [] : [],
-    );
-    const cohortIds = collectCohortIds(allFilters, breakdowns);
+    // Same guard as FunnelService / getChartSql — drop breakdowns whose name
+    // can't be resolved against the events schema.
+    breakdowns = breakdowns.filter((b) => isKnownEventField(b.name));
+
+    const cohortIds = collectBreakdownCohortIds(breakdowns);
     const cohortMetadata = await fetchCohortsMetadata(cohortIds);
     const cohortJoinsSql = cohortIds
       .map((id) => buildInlineCohortJoin(id, projectId, 'events'))
@@ -70,7 +74,15 @@ export class ConversionService {
         const fieldName = b.name.replace('profile.', '').split('.')[0];
         if (fieldName === 'properties') {
           profileFields.add('properties');
-        } else if (['email', 'first_name', 'last_name'].includes(fieldName!)) {
+        } else if (
+          [
+            'email',
+            'first_name',
+            'last_name',
+            'created_at',
+            'last_seen_at',
+          ].includes(fieldName!)
+        ) {
           profileFields.add(fieldName!);
         }
       }

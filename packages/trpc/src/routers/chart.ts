@@ -1,4 +1,3 @@
-import { round } from '@openpanel/common';
 import {
   AggregateChartEngine,
   ChartEngine,
@@ -17,9 +16,13 @@ import {
   getProfilePropertySelect,
   getProfilesCached,
   getReportById,
+  getRetentionCohort,
   getSelectPropertyKey,
   getSettingsForProject,
   type IServiceProfile,
+  isKnownEventField,
+  mergeGlobalFilters,
+  normalizeEventField,
   onlyReportEvents,
   sankeyService,
   TABLE_NAMES,
@@ -27,36 +30,24 @@ import {
 } from '@openpanel/db';
 import {
   type IChartEvent,
+  zChartEventFilter,
   zChartSeries,
   zCriteria,
   zRange,
   zReportInput,
   zTimeInterval,
 } from '@openpanel/validation';
-import {
-  differenceInDays,
-  differenceInMonths,
-  differenceInWeeks,
-  formatISO,
-} from 'date-fns';
-import { flatten, map, pipe, prop, range, sort, uniq } from 'ramda';
+import { flatten, map, pipe, prop, sort, uniq } from 'ramda';
 import sqlstring from 'sqlstring';
 import { z } from 'zod';
 import { getProjectAccess } from '../access';
-import { TRPCAccessError } from '../errors';
+import { TRPCAccessError, TRPCForbiddenError } from '../errors';
 import {
   cacheMiddleware,
   createTRPCRouter,
   protectedProcedure,
   publicProcedure,
 } from '../trpc';
-
-function utc(date: string | Date) {
-  if (typeof date === 'string') {
-    return date.replace('T', ' ').slice(0, 19);
-  }
-  return formatISO(date).replace('T', ' ').slice(0, 19);
-}
 
 const cacher = cacheMiddleware(60);
 
@@ -86,13 +77,13 @@ const chartProcedure = publicProcedure.use(
         }
       );
       if (!shareValidation.isValid) {
-        throw TRPCAccessError('You do not have access to this share');
+        throw new TRPCForbiddenError('You do not have access to this share');
       }
 
       // Fetch report
       const report = await getReportById(rawInput.id);
       if (!report) {
-        throw TRPCAccessError('Report not found');
+        throw new TRPCAccessError('Report not found');
       }
 
       return next({
@@ -104,14 +95,14 @@ const chartProcedure = publicProcedure.use(
 
     // Regular member access check
     if (!ctx.session?.userId) {
-      throw TRPCAccessError('Authentication required');
+      throw new TRPCAccessError('Authentication required');
     }
     const access = await getProjectAccess({
       projectId: rawInput.projectId,
       userId: ctx.session.userId,
     });
     if (!access) {
-      throw TRPCAccessError('You do not have access to this project');
+      throw new TRPCForbiddenError('You do not have access to this project');
     }
 
     return next({
@@ -304,6 +295,8 @@ export const chartRouter = createTRPCRouter({
         'profile.first_name',
         'profile.last_name',
         'profile.email',
+        'profile.created_at',
+        'profile.last_seen_at',
       ];
 
       const properties = [
@@ -382,10 +375,26 @@ export const chartRouter = createTRPCRouter({
 
         const res = await query.execute();
         values.push(...res.map((r) => String(r.values)).filter(Boolean));
+      } else if (property === 'cohort' || property.startsWith('cohort:')) {
+        // Cohort filters use a dedicated cohort multi-select on the client
+        // (ComboboxAdvanced over all cohorts) — values aren't sourced from
+        // an event-column distinct query. Without this guard, the events
+        // SELECT would emit a literal `cohort:<uuid>` identifier and crash
+        // with a ClickHouse syntax error.
+        return { values: [] };
       } else {
+        // Normalize bare utm_* names to `properties.__query.utm_*` and rewrite
+        // camelCase aliases (`referrerName`) to their snake_case columns.
+        // Unknown identifiers (saved-report typos like `temple_name`, or
+        // misnamed columns from older clients) get an empty value list rather
+        // than crashing the autocomplete query with UNKNOWN_IDENTIFIER.
+        const resolvedProperty = normalizeEventField(property);
+        if (!isKnownEventField(resolvedProperty)) {
+          return { values: [] };
+        }
         const query = clix(ch)
           .select<{ values: string[] }>([
-            `distinct ${getSelectPropertyKey(property)} as values`,
+            `distinct ${getSelectPropertyKey(resolvedProperty)} as values`,
           ])
           .from(TABLE_NAMES.events)
           .where('project_id', '=', projectId)
@@ -524,7 +533,9 @@ export const chartRouter = createTRPCRouter({
     }
 
     // Extract start/end events from series based on mode
-    const eventSeries = onlyReportEvents(input.series);
+    const eventSeries = onlyReportEvents(
+      mergeGlobalFilters(input.series, input.globalFilters),
+    );
 
     if (!eventSeries[0]) {
       throw new Error('Start and end events are required');
@@ -604,6 +615,7 @@ export const chartRouter = createTRPCRouter({
         endDate: z.string().nullish(),
         interval: zTimeInterval.default('day'),
         range: zRange,
+        filters: z.array(zChartEventFilter).optional(),
         shareId: z.string().optional(),
         id: z.string().optional(),
       })
@@ -613,6 +625,10 @@ export const chartRouter = createTRPCRouter({
       let firstEvent = input.firstEvent;
       let secondEvent = input.secondEvent;
       let criteria = input.criteria;
+      // Property/cohort filters scoping the retention audience. These live
+      // alongside the event-name selector (filters[0]) on each retention
+      // series; everything except that name selector is an audience filter.
+      let filters = input.filters ?? [];
       const dateRange = ctx.report
         ? (input.range ?? ctx.report.range)
         : input.range;
@@ -651,6 +667,12 @@ export const chartRouter = createTRPCRouter({
 
         firstEvent = extractedFirstEvent;
         secondEvent = extractedSecondEvent;
+        filters = [
+          ...(ctx.report.globalFilters ?? []),
+          ...eventSeries.flatMap((serie) =>
+            (serie.filters ?? []).filter((filter) => filter.name !== 'name')
+          ),
+        ];
       }
 
       const { timezone } = await getSettingsForProject(projectId);
@@ -662,116 +684,17 @@ export const chartRouter = createTRPCRouter({
         },
         timezone
       );
-      const diffInterval = {
-        minute: () => differenceInDays(dates.endDate, dates.startDate),
-        hour: () => differenceInDays(dates.endDate, dates.startDate),
-        day: () => differenceInDays(dates.endDate, dates.startDate),
-        week: () => differenceInWeeks(dates.endDate, dates.startDate),
-        month: () => differenceInMonths(dates.endDate, dates.startDate),
-      }[interval]();
-      const sqlInterval = {
-        minute: 'DAY',
-        hour: 'DAY',
-        day: 'DAY',
-        week: 'WEEK',
-        month: 'MONTH',
-      }[interval];
 
-      const sqlToStartOf = {
-        minute: 'toDate',
-        hour: 'toDate',
-        day: 'toDate',
-        week: 'toStartOfWeek',
-        month: 'toStartOfMonth',
-      }[interval];
-
-      const countCriteria = criteria === 'on_or_after' ? '>=' : '=';
-
-      const usersSelect = range(0, diffInterval + 1)
-        .map(
-          (index) =>
-            `groupUniqArrayIf(profile_id, x_after_cohort ${countCriteria} ${index}) AS interval_${index}_users`
-        )
-        .join(',\n');
-
-      const countsSelect = range(0, diffInterval + 1)
-        .map(
-          (index) =>
-            `length(interval_${index}_users) AS interval_${index}_user_count`
-        )
-        .join(',\n');
-
-      const whereEventNameIs = (event: string[]) => {
-        if (event.length === 1) {
-          return `name = ${sqlstring.escape(event[0])}`;
-        }
-        return `name IN (${event.map((e) => sqlstring.escape(e)).join(',')})`;
-      };
-
-      const cohortQuery = `
-        WITH 
-        cohort_users AS (
-          SELECT
-            profile_id AS userID,
-            project_id,
-            ${sqlToStartOf}(created_at) AS cohort_interval
-          FROM ${TABLE_NAMES.cohort_events_mv}
-          WHERE ${whereEventNameIs(firstEvent)}
-            AND project_id = ${sqlstring.escape(projectId)}
-            AND created_at BETWEEN toDate('${utc(dates.startDate)}') AND toDate('${utc(dates.endDate)}')
-        ),
-        last_event AS
-        (
-            SELECT
-                profile_id,
-                project_id,
-                toDate(created_at) AS event_date
-            FROM cohort_events_mv
-            WHERE ${whereEventNameIs(secondEvent)}
-            AND project_id = ${sqlstring.escape(projectId)}
-            AND created_at BETWEEN toDate('${utc(dates.startDate)}') AND toDate('${utc(dates.endDate)}') + INTERVAL ${diffInterval} ${sqlInterval}
-        ),
-        retention_matrix AS
-        (
-          SELECT
-              f.cohort_interval,
-              l.profile_id,
-              dateDiff('${sqlInterval}', f.cohort_interval, ${sqlToStartOf}(l.event_date)) AS x_after_cohort
-          FROM cohort_users AS f
-          INNER JOIN last_event AS l ON f.userID = l.profile_id
-          WHERE (l.event_date >= f.cohort_interval) 
-          AND (l.event_date <= (f.cohort_interval + INTERVAL ${diffInterval} ${sqlInterval}))
-        ),
-        interval_users AS (
-          SELECT
-            cohort_interval,
-            ${usersSelect}
-          FROM retention_matrix
-          GROUP BY cohort_interval
-        ),
-        cohort_sizes AS (
-          SELECT
-            cohort_interval,
-            COUNT(DISTINCT userID) AS total_first_event_count
-          FROM cohort_users
-          GROUP BY cohort_interval
-        )
-        SELECT
-          cohort_interval,
-          cohort_sizes.total_first_event_count,
-          ${countsSelect}
-        FROM interval_users
-        LEFT JOIN cohort_sizes AS cs ON cohort_interval = cs.cohort_interval
-        ORDER BY cohort_interval ASC
-      `;
-
-      const cohortData = await chQuery<{
-        cohort_interval: string;
-        total_first_event_count: number;
-        [key: string]: any;
-      }>(cohortQuery);
-
-      return processCohortData(cohortData, diffInterval);
+      return getRetentionCohort({
+        projectId,
+        firstEvent,
+        secondEvent,
+        criteria,
+        interval,
+        startDate: dates.startDate,
+        endDate: dates.endDate,
+        filters,
+      });
     }),
 
   getProfiles: protectedProcedure
@@ -948,14 +871,22 @@ export const chartRouter = createTRPCRouter({
         group,
       });
 
-      // Check for profile filters and add profile join if needed
+      // Profile JOIN must cover both profile filters AND profile breakdowns —
+      // breakdownSelects reference `profile.properties[...]` etc. via
+      // getSelectPropertyKey, so the alias has to exist in scope even when
+      // no filter touches the profiles table. Mirrors the same guard in
+      // funnelService.getFunnel.
       const profileFilters = funnelService.getProfileFilters(
         eventSeries as IChartEvent[]
       );
-      if (profileFilters.length > 0) {
-        const fieldsToSelect = uniq(
-          profileFilters.map((f) => f.split('.')[0])
-        ).join(', ');
+      const profileBreakdownNames = breakdowns
+        .filter((b) => b.name.startsWith('profile.'))
+        .map((b) => b.name.replace('profile.', ''));
+      if (profileFilters.length > 0 || profileBreakdownNames.length > 0) {
+        const fieldsToSelect = uniq([
+          ...profileFilters.map((f) => f.split('.')[0]!),
+          ...profileBreakdownNames.map((f) => f.split('.')[0]!),
+        ]).join(', ');
         funnelCte.leftJoin(
           `(SELECT id, ${fieldsToSelect} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile`,
           'profile.id = events.profile_id'
@@ -1032,74 +963,3 @@ export const chartRouter = createTRPCRouter({
       return profiles;
     }),
 });
-
-function processCohortData(
-  data: Array<{
-    cohort_interval: string;
-    total_first_event_count: number;
-    [key: string]: any;
-  }>,
-  diffInterval: number
-) {
-  if (data.length === 0) {
-    return [];
-  }
-
-  const processed = data.map((row) => {
-    const sum = row.total_first_event_count;
-    const values = range(0, diffInterval + 1).map(
-      (index) => (row[`interval_${index}_user_count`] || 0) as number
-    );
-
-    return {
-      cohort_interval: row.cohort_interval,
-      sum,
-      values,
-      percentages: values.map((value) => (sum > 0 ? round(value / sum, 2) : 0)),
-    };
-  });
-
-  const averageData: {
-    totalSum: number;
-    values: Array<{ sum: number; weightedSum: number }>;
-    percentages: Array<{ sum: number; weightedSum: number }>;
-  } = {
-    totalSum: 0,
-    values: range(0, diffInterval + 1).map(() => ({ sum: 0, weightedSum: 0 })),
-    percentages: range(0, diffInterval + 1).map(() => ({
-      sum: 0,
-      weightedSum: 0,
-    })),
-  };
-
-  // Aggregate data for weighted averages, excluding zeros
-  processed.forEach((row) => {
-    averageData.totalSum += row.sum;
-    row.values.forEach((value, index) => {
-      if (value !== 0) {
-        averageData.values[index]!.sum += row.sum;
-        averageData.values[index]!.weightedSum += value * row.sum;
-      }
-    });
-    row.percentages.forEach((percentage, index) => {
-      if (percentage !== 0) {
-        averageData.percentages[index]!.sum += row.sum;
-        averageData.percentages[index]!.weightedSum += percentage * row.sum;
-      }
-    });
-  });
-
-  // Calculate weighted average values, excluding zeros
-  const averageRow = {
-    cohort_interval: 'Weighted Average',
-    sum: round(averageData.totalSum / processed.length, 0),
-    percentages: averageData.percentages.map(({ sum, weightedSum }) =>
-      sum > 0 ? round(weightedSum / sum, 2) : 0
-    ),
-    values: averageData.values.map(({ sum, weightedSum }) =>
-      sum > 0 ? round(weightedSum / sum, 0) : 0
-    ),
-  };
-
-  return [averageRow, ...processed];
-}

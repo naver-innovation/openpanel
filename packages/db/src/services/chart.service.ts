@@ -1,16 +1,115 @@
 /** biome-ignore-all lint/style/useDefaultSwitchClause: switch cases are exhaustive by design */
 import { stripLeadingAndTrailingSlashes } from '@openpanel/common';
-import type {
-  CohortDefinition,
-  IChartBreakdown,
-  IChartEventFilter,
-  IGetChartDataInput,
-  IReportInput,
+import {
+  type CohortDefinition,
+  getCohortIds,
+  type IChartBreakdown,
+  type IChartEventFilter,
+  type IGetChartDataInput,
+  type IReportInput,
 } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
 import { formatClickhouseDate, TABLE_NAMES } from '../clickhouse/client';
 import { db } from '../prisma-client';
 import { createSqlBuilder } from '../sql-builder';
+import { buildTypedClause, hasTypedCast, isTypedOperator } from './filter-cast';
+
+// Top-level columns on the events table. Derived from the migration in
+// packages/db/code-migrations/3-init-ch.ts (+ revenue added in 6-add-revenue-
+// column.ts). Used by `resolveEventColumn` to distinguish real columns from
+// property keys and reject unknown identifiers before they reach ClickHouse.
+const EVENT_TOP_LEVEL_COLUMNS = new Set<string>([
+  'id',
+  'name',
+  'sdk_name',
+  'sdk_version',
+  'device_id',
+  'profile_id',
+  'project_id',
+  'session_id',
+  'path',
+  'origin',
+  'referrer',
+  'referrer_name',
+  'referrer_type',
+  'duration',
+  'revenue',
+  'created_at',
+  'country',
+  'city',
+  'region',
+  'longitude',
+  'latitude',
+  'os',
+  'os_version',
+  'browser',
+  'browser_version',
+  'device',
+  'brand',
+  'model',
+  'imported_at',
+]);
+
+// Older clients / saved reports send some field names in camelCase. Map them
+// to the canonical snake_case ClickHouse column so they don't fall through as
+// unknown identifiers. The bare values (`utm_source` etc.) actually live in
+// the `properties` map — `normalizeEventField` rewrites those into the
+// `properties.__query.utm_*` form.
+const EVENT_FIELD_ALIASES: Record<string, string> = {
+  referrerName: 'referrer_name',
+  referrerType: 'referrer_type',
+  sessionId: 'session_id',
+  deviceId: 'device_id',
+  profileId: 'profile_id',
+  projectId: 'project_id',
+  osVersion: 'os_version',
+  browserVersion: 'browser_version',
+  sdkName: 'sdk_name',
+  sdkVersion: 'sdk_version',
+  createdAt: 'created_at',
+  importedAt: 'imported_at',
+};
+
+const EVENT_UTM_BARE_COLUMNS = new Set<string>([
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_term',
+  'utm_content',
+]);
+
+// Normalize an incoming field name into its canonical form. Returns a string
+// suitable for `getSelectPropertyKey` / `getEventFiltersWhereClause` — i.e.
+// either a top-level column name (`referrer_name`), a `properties.foo` /
+// `profile.foo` / `group.foo` path, or `has_profile`. Unknown names are
+// returned unchanged; callers must guard with `isKnownEventField` before
+// inlining into SQL.
+export function normalizeEventField(name: string): string {
+  if (EVENT_FIELD_ALIASES[name]) {
+    return EVENT_FIELD_ALIASES[name]!;
+  }
+  if (EVENT_UTM_BARE_COLUMNS.has(name)) {
+    return `properties.__query.${name}`;
+  }
+  return name;
+}
+
+// Returns true if `name` resolves to something we can inline into SQL safely:
+// a known top-level events column, a properties / profile / group path, a
+// cohort breakdown, or `has_profile`. Used to drop unknown filters/breakdowns
+// instead of emitting invalid `SELECT cohort` / `SELECT temple_name` queries.
+export function isKnownEventField(name: string): boolean {
+  if (name === 'has_profile') return true;
+  if (isAllCohortsBreakdown(name)) return true;
+  if (extractCohortId(name)) return true;
+  if (name.startsWith('properties.')) return true;
+  if (name.startsWith('profile.')) return true;
+  if (name.startsWith('group.')) return true;
+  const normalized = normalizeEventField(name);
+  if (normalized.startsWith('properties.')) return true;
+  if (EVENT_TOP_LEVEL_COLUMNS.has(normalized)) return true;
+  return false;
+}
 
 export type CohortMetadata = {
   id: string;
@@ -106,16 +205,16 @@ export function buildAllCohortsLabelExpr(
   return `transform(${alias}.cohort_id, [${ids}], [${names}], 'Unknown')`;
 }
 
-export function collectCohortIds(
-  filters: IChartEventFilter[],
+/**
+ * Cohort IDs that need a `cohort_<id>` JOIN alias to be wired up by the
+ * caller. After filter SQL became self-contained, only cohort *breakdowns*
+ * require the JOIN — they reference `cohort_<id>.profile_id` in their
+ * SELECT expression via `getSelectPropertyKey`.
+ */
+export function collectBreakdownCohortIds(
   breakdowns: IChartBreakdown[],
 ): string[] {
   const ids = new Set<string>();
-  for (const filter of filters) {
-    if (filter.cohortId) {
-      ids.add(filter.cohortId);
-    }
-  }
   for (const breakdown of breakdowns) {
     const id = extractCohortId(breakdown.name);
     if (id) {
@@ -202,6 +301,12 @@ export function getProfilePropertySelect(property: string): string {
   if (withoutPrefix === 'avatar') {
     return 'avatar';
   }
+  if (withoutPrefix === 'created_at') {
+    return 'created_at';
+  }
+  if (withoutPrefix === 'last_seen_at') {
+    return 'last_seen_at';
+  }
   if (withoutPrefix.startsWith('properties.')) {
     const propKey = withoutPrefix.replace(/^properties\./, '');
     return `properties[${sqlstring.escape(propKey)}]`;
@@ -210,11 +315,25 @@ export function getProfilePropertySelect(property: string): string {
 }
 
 export function getSelectPropertyKey(
-  property: string,
+  rawProperty: string,
   projectId?: string,
   cohortId?: string,
   cohortName?: string,
+  /**
+   * When set, the events table's `properties` map is qualified with this
+   * alias (e.g. `e.properties[...]`). Required in any query where another
+   * joined table also exposes a `properties` column (such as the groups
+   * `_g` join), otherwise ClickHouse rejects with "ambiguous identifier".
+   */
+  eventsAlias?: string,
 ) {
+  // Map camelCase aliases (`referrerName` → `referrer_name`) and bare UTM
+  // names (`utm_source` → `properties.__query.utm_source`) into their
+  // canonical form before doing any pattern matching. The fallback at the
+  // bottom of this function returns `property` verbatim, so without this
+  // normalization an alias would leak into the generated SQL and fail with
+  // UNKNOWN_IDENTIFIER.
+  const property = normalizeEventField(rawProperty);
   const extractedCohortId = cohortId || extractCohortId(property);
 
   if (extractedCohortId && projectId) {
@@ -246,18 +365,24 @@ export function getSelectPropertyKey(
     return property;
   }
 
+  // Only the events table's bare `properties` map needs aliasing —
+  // `profile.properties` already routes through the profile join alias.
+  const aliasPrefix = match === 'properties' && eventsAlias
+    ? `${eventsAlias}.`
+    : '';
+
   if (property.includes('*')) {
-    return `arrayMap(x -> trim(x), mapValues(mapExtractKeyLike(${match}, ${sqlstring.escape(
+    return `arrayMap(x -> trim(x), mapValues(mapExtractKeyLike(${aliasPrefix}${match}, ${sqlstring.escape(
       transformPropertyKey(property)
     )})))`;
   }
 
-  return `${match}['${property.replace(new RegExp(`^${match}.`), '')}']`;
+  return `${aliasPrefix}${match}['${property.replace(new RegExp(`^${match}.`), '')}']`;
 }
 
 export async function getChartSql({
   event,
-  breakdowns,
+  breakdowns: initialBreakdowns,
   interval,
   startDate,
   endDate,
@@ -278,14 +403,29 @@ export async function getChartSql({
     with: addCte,
   } = createSqlBuilder();
 
-  const hasAllCohortsBreakdown = breakdowns.some((b) =>
+  // Drop breakdowns whose field name doesn't resolve to a known events
+  // column, properties path, profile path, group path, or cohort. The chart
+  // service used to inline whatever the dashboard sent — saved reports with
+  // fields like `temple_name` (a property, not a column) reached the _uc CTE
+  // as `SELECT temple_name as _uc_label_1 FROM events`, failing parse.
+  let breakdowns = initialBreakdowns.filter((b) => isKnownEventField(b.name));
+  const requestedAllCohortsBreakdown = breakdowns.some((b) =>
     isAllCohortsBreakdown(b.name),
   );
-  const allCohorts = hasAllCohortsBreakdown
+  const allCohorts = requestedAllCohortsBreakdown
     ? await fetchProjectCohorts(projectId)
     : [];
+  // Drop the all-cohorts breakdown when the project has no cohorts: the label
+  // expression collapses to the literal 'Unknown', making the _uc JOIN ON it
+  // a constant comparison with no join key (ClickHouse rejects with
+  // "Cannot determine join keys").
+  if (requestedAllCohortsBreakdown && allCohorts.length === 0) {
+    breakdowns = breakdowns.filter((b) => !isAllCohortsBreakdown(b.name));
+  }
+  const hasAllCohortsBreakdown =
+    requestedAllCohortsBreakdown && allCohorts.length > 0;
 
-  const cohortIds = collectCohortIds(event.filters, breakdowns);
+  const cohortIds = collectBreakdownCohortIds(breakdowns);
   const cohortMetadata = await fetchCohortsMetadata(cohortIds);
 
   // Add CTE + JOIN for "all cohorts" breakdown
@@ -305,7 +445,7 @@ export async function getChartSql({
       `LEFT ANY JOIN ${getCohortCteName(cohortId)} AS ${getCohortAlias(cohortId)} ON ${getCohortAlias(cohortId)}.profile_id = e.profile_id`;
   }
 
-  sb.where = getEventFiltersWhereClause(event.filters, projectId);
+  sb.where = getEventFiltersWhereClause(event.filters, projectId, 'e');
   sb.where.projectId = `project_id = ${sqlstring.escape(projectId)}`;
 
   if (event.name !== '*') {
@@ -370,7 +510,13 @@ export async function getChartSql({
           fields.add('properties');
         } else if (
           fieldName &&
-          ['email', 'first_name', 'last_name'].includes(fieldName)
+          [
+            'email',
+            'first_name',
+            'last_name',
+            'created_at',
+            'last_seen_at',
+          ].includes(fieldName)
         ) {
           fields.add(fieldName);
         }
@@ -385,7 +531,13 @@ export async function getChartSql({
           fields.add('properties');
         } else if (
           fieldName &&
-          ['email', 'first_name', 'last_name'].includes(fieldName)
+          [
+            'email',
+            'first_name',
+            'last_name',
+            'created_at',
+            'last_seen_at',
+          ].includes(fieldName)
         ) {
           fields.add(fieldName);
         }
@@ -419,6 +571,12 @@ export async function getChartSql({
       if (field === 'last_name') {
         return 'last_name as "profile.last_name"';
       }
+      if (field === 'created_at') {
+        return 'created_at as "profile.created_at"';
+      }
+      if (field === 'last_seen_at') {
+        return 'last_seen_at as "profile.last_seen_at"';
+      }
       return field;
     });
 
@@ -435,29 +593,43 @@ export async function getChartSql({
   }
 
   sb.select.count = 'count(*) as count';
+  // ClickHouse rejects WITH FILL when TO < FROM, so only emit a fill clause
+  // for a valid range. The SELECT bucket truncation is always safe.
+  const hasValidFillRange =
+    !!startDate && !!endDate && new Date(endDate) >= new Date(startDate);
   switch (interval) {
     case 'minute': {
-      sb.fill = `FROM toStartOfMinute(toDateTime('${startDate}')) TO toStartOfMinute(toDateTime('${endDate}')) STEP toIntervalMinute(1)`;
+      if (hasValidFillRange) {
+        sb.fill = `FROM toStartOfMinute(toDateTime('${startDate}')) TO toStartOfMinute(toDateTime('${endDate}')) STEP toIntervalMinute(1)`;
+      }
       sb.select.date = 'toStartOfMinute(created_at) as date';
       break;
     }
     case 'hour': {
-      sb.fill = `FROM toStartOfHour(toDateTime('${startDate}')) TO toStartOfHour(toDateTime('${endDate}')) STEP toIntervalHour(1)`;
+      if (hasValidFillRange) {
+        sb.fill = `FROM toStartOfHour(toDateTime('${startDate}')) TO toStartOfHour(toDateTime('${endDate}')) STEP toIntervalHour(1)`;
+      }
       sb.select.date = 'toStartOfHour(created_at) as date';
       break;
     }
     case 'day': {
-      sb.fill = `FROM toStartOfDay(toDateTime('${startDate}')) TO toStartOfDay(toDateTime('${endDate}')) STEP toIntervalDay(1)`;
+      if (hasValidFillRange) {
+        sb.fill = `FROM toStartOfDay(toDateTime('${startDate}')) TO toStartOfDay(toDateTime('${endDate}')) STEP toIntervalDay(1)`;
+      }
       sb.select.date = 'toStartOfDay(created_at) as date';
       break;
     }
     case 'week': {
-      sb.fill = `FROM toStartOfWeek(toDateTime('${startDate}'), 1, '${timezone}') TO toStartOfWeek(toDateTime('${endDate}'), 1, '${timezone}') STEP toIntervalWeek(1)`;
+      if (hasValidFillRange) {
+        sb.fill = `FROM toStartOfWeek(toDateTime('${startDate}'), 1, '${timezone}') TO toStartOfWeek(toDateTime('${endDate}'), 1, '${timezone}') STEP toIntervalWeek(1)`;
+      }
       sb.select.date = `toStartOfWeek(created_at, 1, '${timezone}') as date`;
       break;
     }
     case 'month': {
-      sb.fill = `FROM toStartOfMonth(toDateTime('${startDate}'), '${timezone}') TO toStartOfMonth(toDateTime('${endDate}'), '${timezone}') STEP toIntervalMonth(1)`;
+      if (hasValidFillRange) {
+        sb.fill = `FROM toStartOfMonth(toDateTime('${startDate}'), '${timezone}') TO toStartOfMonth(toDateTime('${endDate}'), '${timezone}') STEP toIntervalMonth(1)`;
+      }
       sb.select.date = `toStartOfMonth(created_at, '${timezone}') as date`;
       break;
     }
@@ -485,7 +657,7 @@ export async function getChartSql({
         ? cohortMetadata.get(breakdownCohortId)?.name
         : undefined;
       sb.select[key] =
-        `${getSelectPropertyKey(breakdown.name, projectId, breakdownCohortId ?? undefined, breakdownCohortName)} as ${key}`;
+        `${getSelectPropertyKey(breakdown.name, projectId, breakdownCohortId ?? undefined, breakdownCohortName, 'e')} as ${key}`;
     }
     sb.groupBy[key] = `${key}`;
   });
@@ -515,7 +687,13 @@ export async function getChartSql({
   }[event.segment as string];
 
   if (mathFunction && event.property) {
-    const propertyKey = getSelectPropertyKey(event.property);
+    const propertyKey = getSelectPropertyKey(
+      event.property,
+      undefined,
+      undefined,
+      undefined,
+      'e',
+    );
 
     if (isNumericColumn(event.property)) {
       sb.select.count = `${mathFunction}(${propertyKey}) as count`;
@@ -535,6 +713,11 @@ export async function getChartSql({
         ORDER BY profile_id, created_at DESC
       ) as subQuery`;
     sb.joins = {};
+    // Filters were already applied inside the subquery, and the outer query
+    // selects from `subQuery` — the `e` alias used in sb.where is no longer
+    // in scope, so re-emitting WHERE would produce
+    // "Unknown identifier `e.name`". Clear it.
+    sb.where = {};
 
     const sql = `${getWith()}${getSelect()} ${getFrom()} ${getJoins()} ${getWhere()} ${getGroupBy()} ${getOrderBy()} ${getFill()}`;
     console.log('-- Report --');
@@ -573,6 +756,7 @@ export async function getChartSql({
         projectId,
         bId ?? undefined,
         bName,
+        'e',
       );
       return `${propertyKey} as _uc_label_${index + 1}`;
     });
@@ -601,6 +785,7 @@ export async function getChartSql({
           projectId,
           bId ?? undefined,
           bName,
+          'e',
         );
         return `_uc._uc_label_${index + 1} = ${propertyKey}`;
       })
@@ -629,7 +814,7 @@ export async function getChartSql({
 
 export async function getAggregateChartSql({
   event,
-  breakdowns,
+  breakdowns: initialBreakdowns,
   startDate,
   endDate,
   projectId,
@@ -639,14 +824,26 @@ export async function getAggregateChartSql({
 }) {
   const { sb, join, getJoins, with: addCte, getSql } = createSqlBuilder();
 
-  const hasAllCohortsBreakdown = breakdowns.some((b) =>
+  // Drop breakdowns whose field name doesn't resolve to a known events
+  // column, properties path, profile path, group path, or cohort. The chart
+  // service used to inline whatever the dashboard sent — saved reports with
+  // fields like `temple_name` (a property, not a column) reached the _uc CTE
+  // as `SELECT temple_name as _uc_label_1 FROM events`, failing parse.
+  let breakdowns = initialBreakdowns.filter((b) => isKnownEventField(b.name));
+  const requestedAllCohortsBreakdown = breakdowns.some((b) =>
     isAllCohortsBreakdown(b.name),
   );
-  const allCohorts = hasAllCohortsBreakdown
+  const allCohorts = requestedAllCohortsBreakdown
     ? await fetchProjectCohorts(projectId)
     : [];
+  // See getChartSql for rationale.
+  if (requestedAllCohortsBreakdown && allCohorts.length === 0) {
+    breakdowns = breakdowns.filter((b) => !isAllCohortsBreakdown(b.name));
+  }
+  const hasAllCohortsBreakdown =
+    requestedAllCohortsBreakdown && allCohorts.length > 0;
 
-  const cohortIds = collectCohortIds(event.filters, breakdowns);
+  const cohortIds = collectBreakdownCohortIds(breakdowns);
   const cohortMetadata = await fetchCohortsMetadata(cohortIds);
 
   // Add CTE + JOIN for "all cohorts" breakdown
@@ -666,7 +863,7 @@ export async function getAggregateChartSql({
       `LEFT ANY JOIN ${getCohortCteName(cohortId)} AS ${getCohortAlias(cohortId)} ON ${getCohortAlias(cohortId)}.profile_id = e.profile_id`;
   }
 
-  sb.where = getEventFiltersWhereClause(event.filters, projectId);
+  sb.where = getEventFiltersWhereClause(event.filters, projectId, 'e');
   sb.where.projectId = `project_id = ${sqlstring.escape(projectId)}`;
 
   if (event.name !== '*') {
@@ -720,7 +917,13 @@ export async function getAggregateChartSql({
           fields.add('properties');
         } else if (
           fieldName &&
-          ['email', 'first_name', 'last_name'].includes(fieldName)
+          [
+            'email',
+            'first_name',
+            'last_name',
+            'created_at',
+            'last_seen_at',
+          ].includes(fieldName)
         ) {
           fields.add(fieldName);
         }
@@ -735,7 +938,13 @@ export async function getAggregateChartSql({
           fields.add('properties');
         } else if (
           fieldName &&
-          ['email', 'first_name', 'last_name'].includes(fieldName)
+          [
+            'email',
+            'first_name',
+            'last_name',
+            'created_at',
+            'last_seen_at',
+          ].includes(fieldName)
         ) {
           fields.add(fieldName);
         }
@@ -767,6 +976,12 @@ export async function getAggregateChartSql({
       }
       if (field === 'last_name') {
         return 'last_name as "profile.last_name"';
+      }
+      if (field === 'created_at') {
+        return 'created_at as "profile.created_at"';
+      }
+      if (field === 'last_seen_at') {
+        return 'last_seen_at as "profile.last_seen_at"';
       }
       return field;
     });
@@ -807,7 +1022,7 @@ export async function getAggregateChartSql({
         ? cohortMetadata.get(breakdownCohortId)?.name
         : undefined;
       sb.select[key] =
-        `${getSelectPropertyKey(breakdown.name, projectId, breakdownCohortId ?? undefined, breakdownCohortName)} as ${key}`;
+        `${getSelectPropertyKey(breakdown.name, projectId, breakdownCohortId ?? undefined, breakdownCohortName, 'e')} as ${key}`;
     }
     sb.groupBy[key] = `${key}`;
   });
@@ -844,7 +1059,13 @@ export async function getAggregateChartSql({
   }[event.segment as string];
 
   if (mathFunction && event.property) {
-    const propertyKey = getSelectPropertyKey(event.property, projectId);
+    const propertyKey = getSelectPropertyKey(
+      event.property,
+      projectId,
+      undefined,
+      undefined,
+      'e',
+    );
 
     if (isNumericColumn(event.property)) {
       sb.select.count = `${mathFunction}(${propertyKey}) as count`;
@@ -894,20 +1115,57 @@ function isNumericColumn(columnName: string): boolean {
 
 export function getEventFiltersWhereClause(
   filters: IChartEventFilter[],
-  projectId?: string
+  projectId?: string,
+  /**
+   * See `getSelectPropertyKey`. When the surrounding query joins another
+   * table that has a `properties` column (e.g. the `_g` groups join), the
+   * events table must be aliased and passed here so we can emit
+   * `e.properties[...]` instead of the ambiguous `properties[...]`.
+   */
+  eventsAlias?: string,
+  /**
+   * Which physical table the WHERE clause is being built for. Affects which
+   * names count as "top-level columns" and whether bare `utm_*` gets routed
+   * into the events-specific `properties.__query.utm_*` map. Defaults to
+   * 'events' because that's where the vast majority of callers (chart,
+   * funnel, conversion, sankey, event services) target — OverviewService
+   * sets it to 'sessions' when querying the sessions table.
+   */
+  tableScope: 'events' | 'sessions' = 'events',
 ) {
   const where: Record<string, string> = {};
   filters.forEach((filter, index) => {
     const id = `f${index}`;
-    const { name, value, operator, cohortId } = filter;
+    const { value, operator } = filter;
+    // Normalize camelCase aliases (`referrerName` → `referrer_name`) on both
+    // tables — both events and sessions schemas use snake_case. The bare-
+    // utm rewrite only applies to events because sessions stores utm_* as
+    // real top-level columns; doing it for sessions would emit
+    // `properties['__query.utm_source']` against a table that has no
+    // `properties` column.
+    const name =
+      tableScope === 'sessions'
+        ? EVENT_FIELD_ALIASES[filter.name] ?? filter.name
+        : normalizeEventField(filter.name);
 
-    if (operator === 'inCohort' && cohortId && projectId) {
-      where[id] = `notEmpty(${getCohortAlias(cohortId)}.profile_id)`;
-      return;
-    }
-
-    if (operator === 'notInCohort' && cohortId && projectId) {
-      where[id] = `empty(${getCohortAlias(cohortId)}.profile_id)`;
+    if (
+      (operator === 'inCohort' || operator === 'notInCohort') &&
+      projectId
+    ) {
+      // Self-contained membership subselect — no caller JOIN wiring needed.
+      // Cohort filters and cohort breakdowns are decoupled: the breakdown
+      // path (getSelectPropertyKey) still uses a JOIN alias for SELECT
+      // expressions, but filters never depend on it.
+      const cohortIds = getCohortIds(filter);
+      if (cohortIds.length === 0) return;
+      const profileIdExpr = eventsAlias
+        ? `${eventsAlias}.profile_id`
+        : 'profile_id';
+      const op = operator === 'notInCohort' ? 'NOT IN' : 'IN';
+      const escapedIds = cohortIds
+        .map((c) => sqlstring.escape(c))
+        .join(', ');
+      where[id] = `${profileIdExpr} ${op} (SELECT profile_id FROM ${TABLE_NAMES.cohort_members} FINAL WHERE cohort_id IN (${escapedIds}) AND project_id = ${sqlstring.escape(projectId)})`;
       return;
     }
 
@@ -931,6 +1189,10 @@ export function getEventFiltersWhereClause(
     // Handle group. prefixed filters (requires ARRAY JOIN + _g JOIN in query)
     if (name.startsWith('group.') && projectId) {
       const whereFrom = getGroupPropertySql(name);
+      if (hasTypedCast(filter.type) && isTypedOperator(operator)) {
+        where[id] = buildTypedClause(whereFrom, operator, value, filter.type);
+        return;
+      }
       switch (operator) {
         case 'is': {
           if (value.length === 1) {
@@ -993,9 +1255,26 @@ export function getEventFiltersWhereClause(
       name.startsWith('properties.') ||
       name.startsWith('profile.properties.')
     ) {
-      const propertyKey = getSelectPropertyKey(name);
+      const propertyKey = getSelectPropertyKey(
+        name,
+        undefined,
+        undefined,
+        undefined,
+        eventsAlias,
+      );
       const isWildcard = propertyKey.includes('%');
-      const whereFrom = getSelectPropertyKey(name);
+      const whereFrom = propertyKey;
+
+      // Typed cast (number/date/datetime/boolean) short-circuit. Casts both the
+      // column and each value so e.g. `>= '2019-01-01'` compares as dates
+      // instead of crashing `toFloat64('2019-01-01')`. Untyped/string filters
+      // fall through to the legacy switch below.
+      if (hasTypedCast(filter.type) && isTypedOperator(operator)) {
+        where[id] = isWildcard
+          ? `arrayExists(x -> ${buildTypedClause('x', operator, value, filter.type)}, ${whereFrom})`
+          : buildTypedClause(whereFrom, operator, value, filter.type);
+        return;
+      }
 
       switch (operator) {
         case 'is': {
@@ -1203,6 +1482,21 @@ export function getEventFiltersWhereClause(
         }
       }
     } else {
+      // Bare-column branch. For events queries: enforce that `name` is one
+      // of the known top-level columns (anything else would crash parse with
+      // UNKNOWN_IDENTIFIER). For sessions queries: skip the guard because
+      // the sessions table has its own column set (utm_*, entry_path, etc.)
+      // that OverviewService.getRawWhereClause already vets via its
+      // WHITELISTED_FILTERS pre-pass.
+      if (tableScope === 'events' && !EVENT_TOP_LEVEL_COLUMNS.has(name)) {
+        return;
+      }
+      // Typed cast short-circuit (see property branch above). Supersedes the
+      // `isNumericColumn` auto-detect when the user declared an explicit type.
+      if (hasTypedCast(filter.type) && isTypedOperator(operator)) {
+        where[id] = buildTypedClause(name, operator, value, filter.type);
+        return;
+      }
       switch (operator) {
         case 'is': {
           if (value.length === 1) {

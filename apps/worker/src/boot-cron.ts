@@ -39,8 +39,8 @@ export async function bootCron() {
       pattern: '0 0 * * *',
     },
     {
-      name: 'deleteProjects',
-      type: 'deleteProjects',
+      name: 'delete',
+      type: 'delete',
       pattern: '0 * * * *',
     },
     {
@@ -92,6 +92,26 @@ export async function bootCron() {
       name: 'cohortRefresh',
       type: 'cohortRefresh',
       pattern: '*/30 * * * *',
+    },
+    {
+      name: 'sessionReaper',
+      type: 'sessionReaper',
+      pattern: 1000 * 60 * 5, // every 5 minutes
+    },
+    {
+      name: 'sessionVacuum',
+      type: 'sessionVacuum',
+      pattern: '0 4 * * *', // daily at 04:00 UTC — backstop for cleanup leaks
+    },
+    {
+      name: 'insightCleanup',
+      type: 'insightCleanup',
+      pattern: '30 4 * * *', // daily at 04:30 UTC — prune stale insights/events
+    },
+    {
+      name: 'weeklyDigest',
+      type: 'weeklyDigest',
+      pattern: '0 8 * * 1', // Mondays 08:00 UTC — weekly analytics digest email
     },
   ];
 

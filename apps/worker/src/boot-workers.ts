@@ -9,7 +9,7 @@ import {
   gscQueue,
   importQueue,
   insightsQueue,
-  miscQueue,
+  isKafkaConfigured,
   notificationQueue,
   queueLogger,
   sessionsQueue,
@@ -21,25 +21,28 @@ import { Worker as GroupWorker } from 'groupmq';
 import { cohortComputeJob } from './jobs/cohort.compute';
 import { cronJob } from './jobs/cron';
 import { incomingEvent } from './jobs/events.incoming-event';
+import {
+  type KafkaConsumerHandle,
+  startKafkaEventsConsumer,
+} from './jobs/events.kafka-consumer';
 import { gscJob } from './jobs/gsc';
 import { importJob } from './jobs/import';
 import { insightsProjectJob } from './jobs/insights';
-import { miscJob } from './jobs/misc';
 import { notificationJob } from './jobs/notification';
 import { sessionsJob } from './jobs/sessions';
 import { eventsGroupJobDuration } from './metrics';
 import { setShuttingDown } from './utils/graceful-shutdown';
+import { logger } from './utils/logger';
 import {
   enableEventsHeartbeat,
   markEventsActivity,
 } from './utils/worker-heartbeat';
-import { logger } from './utils/logger';
 
 const workerOptions: WorkerOptions = {
   connection: getRedisQueue(),
 };
 
-type QueueName = string; // Can be: events, events_N (where N is 0 to shards-1), sessions, cron, notification, misc
+type QueueName = string; // Can be: events, events_N (where N is 0 to shards-1), sessions, cron, notification
 
 /**
  * Parses the ENABLED_QUEUES environment variable and returns an array of queue names to start.
@@ -48,7 +51,7 @@ type QueueName = string; // Can be: events, events_N (where N is 0 to shards-1),
  * Supported queue names:
  * - events - All event shards (events_0, events_1, ..., events_N)
  * - events_N - Individual event shard (where N is 0 to EVENTS_GROUP_QUEUES_SHARDS-1)
- * - sessions, cron, notification, misc
+ * - sessions, cron, notification
  */
 function getEnabledQueues(): QueueName[] {
   const enabledQueuesEnv = process.env.ENABLED_QUEUES?.trim();
@@ -56,14 +59,14 @@ function getEnabledQueues(): QueueName[] {
   if (!enabledQueuesEnv) {
     logger.info(
       { totalEventShards: EVENTS_GROUP_QUEUES_SHARDS },
-      'No ENABLED_QUEUES specified, starting all queues',
+      'No ENABLED_QUEUES specified, starting all queues'
     );
     return [
       'events',
+      'events_kafka',
       'sessions',
       'cron',
       'notification',
-      'misc',
       'import',
       'insights',
       'gsc',
@@ -78,7 +81,7 @@ function getEnabledQueues(): QueueName[] {
 
   logger.info(
     { queues, totalEventShards: EVENTS_GROUP_QUEUES_SHARDS },
-    'Starting queues from ENABLED_QUEUES',
+    'Starting queues from ENABLED_QUEUES'
   );
   return queues;
 }
@@ -105,11 +108,17 @@ export function bootWorkers() {
   const enabledQueues = getEnabledQueues();
 
   const workers: (Worker | GroupWorker<any>)[] = [];
+  const extraStops: Array<() => Promise<unknown>> = [];
 
-  // Start event workers based on enabled queues
+  // Start event workers based on enabled queues.
+  // When Kafka is configured the producer routes every event to Kafka, so the
+  // GroupMQ event shards would only poll an empty queue — skip them entirely
+  // and let the Kafka consumer handle ingestion.
   const eventQueuesToStart: number[] = [];
 
-  if (enabledQueues.includes('events')) {
+  if (isKafkaConfigured()) {
+    logger.info('Kafka is configured, skipping GroupMQ event workers');
+  } else if (enabledQueues.includes('events')) {
     // Start all event shards
     for (let i = 0; i < EVENTS_GROUP_QUEUES_SHARDS; i++) {
       eventQueuesToStart.push(i);
@@ -163,6 +172,27 @@ export function bootWorkers() {
     logger.info({ concurrency }, `Started worker for ${queueName}`);
   }
 
+  // Start Kafka events consumer. When Kafka is configured this fully replaces
+  // the GroupMQ event workers (which are skipped above).
+  if (enabledQueues.includes('events_kafka') && isKafkaConfigured()) {
+    enableEventsHeartbeat();
+    let handle: KafkaConsumerHandle | null = null;
+    const startPromise = startKafkaEventsConsumer()
+      .then((h) => {
+        handle = h;
+        logger.info('Started Kafka events consumer');
+      })
+      .catch((err) => {
+        logger.error({ err }, 'Failed to start Kafka events consumer');
+      });
+    extraStops.push(async () => {
+      await startPromise.catch(() => undefined);
+      if (handle) {
+        await handle.stop();
+      }
+    });
+  }
+
   // Start sessions worker
   if (enabledQueues.includes('sessions')) {
     const concurrency = getConcurrencyFor('sessions');
@@ -195,17 +225,6 @@ export function bootWorkers() {
     );
     workers.push(notificationWorker);
     logger.info({ concurrency }, 'Started worker for notification');
-  }
-
-  // Start misc worker
-  if (enabledQueues.includes('misc')) {
-    const concurrency = getConcurrencyFor('misc');
-    const miscWorker = new Worker(miscQueue.name, miscJob, {
-      ...workerOptions,
-      concurrency,
-    });
-    workers.push(miscWorker);
-    logger.info({ concurrency }, 'Started worker for misc');
   }
 
   // Start import worker
@@ -250,7 +269,7 @@ export function bootWorkers() {
       {
         ...workerOptions,
         concurrency,
-      },
+      }
     );
     workers.push(cohortComputeWorker);
     logger.info({ concurrency }, 'Started worker for cohortCompute');
@@ -292,7 +311,7 @@ export function bootWorkers() {
             failedReason: job.failedReason,
             options: job.opts,
           },
-          'job failed',
+          'job failed'
         );
       }
     });
@@ -300,7 +319,7 @@ export function bootWorkers() {
     (worker as Worker).on('ioredis:close', () => {
       logger.error(
         { worker: worker.name },
-        'worker closed due to ioredis:close',
+        'worker closed due to ioredis:close'
       );
     });
   });
@@ -309,18 +328,30 @@ export function bootWorkers() {
     eventName: string,
     evtOrExitCodeOrError: number | string | Error
   ) {
-    // Log the actual error details for unhandled rejections/exceptions
-    if (evtOrExitCodeOrError instanceof Error) {
+    logger.info(
+      { code: evtOrExitCodeOrError, eventName },
+      'Starting graceful shutdown'
+    );
+
+    // Hard deadline: if cron drain or worker.close() hangs, force-exit
+    // before Docker's stop_grace_period elapses. Without this the
+    // container sits in "Stopping" until SIGKILL (exit 137) and looks
+    // like a real crash to the swarm.
+    const forceExitMs = Number(
+      process.env.SHUTDOWN_FORCE_EXIT_MS || '20000'
+    );
+    const exitCode = Number.isNaN(+evtOrExitCodeOrError)
+      ? 1
+      : +evtOrExitCodeOrError;
+    const forceExit = setTimeout(() => {
       logger.error(
-        { err: evtOrExitCodeOrError, eventName },
-        'Unhandled error triggered shutdown',
+        { eventName, forceExitMs },
+        'Graceful shutdown timed out — forcing exit'
       );
-    } else {
-      logger.info(
-        { code: evtOrExitCodeOrError, eventName },
-        'Starting graceful shutdown',
-      );
-    }
+      process.exit(exitCode);
+    }, forceExitMs);
+    forceExit.unref();
+
     try {
       const time = performance.now();
 
@@ -329,32 +360,49 @@ export function bootWorkers() {
         await waitForQueueToEmpty(cronQueue);
       }
 
-      await Promise.all(workers.map((worker) => worker.close()));
+      await Promise.all([
+        ...workers.map((worker) => worker.close()),
+        ...extraStops.map((stop) =>
+          stop().catch((err) => {
+            logger.error({ err }, 'extra stop handler error');
+          })
+        ),
+      ]);
 
       logger.info(
         { elapsed: performance.now() - time },
-        'workers closed successfully',
+        'workers closed successfully'
       );
     } catch (e) {
       logger.error(
         { err: e, code: evtOrExitCodeOrError },
-        'exit handler error',
+        'exit handler error'
       );
     }
-    const exitCode = Number.isNaN(+evtOrExitCodeOrError)
-      ? 1
-      : +evtOrExitCodeOrError;
+    clearTimeout(forceExit);
     process.exit(exitCode);
   }
 
-  ['uncaughtException', 'unhandledRejection', 'SIGTERM', 'SIGINT'].forEach(
-    (evt) => {
-      process.on(evt, (code) => {
-        setShuttingDown(true);
-        exitHandler(evt, code);
-      });
-    }
-  );
+  // SIGTERM / SIGINT: drain in-flight jobs, then exit.
+  ['SIGTERM', 'SIGINT'].forEach((evt) => {
+    process.on(evt, (code) => {
+      setShuttingDown(true);
+      exitHandler(evt, code);
+    });
+  });
+
+  // uncaughtException / unhandledRejection: process state is corrupt.
+  // Don't try to drain — log and exit fast so Docker respawns us.
+  process.on('uncaughtException', (error) => {
+    logger.fatal({ err: error }, 'Uncaught exception — exiting');
+    setShuttingDown(true);
+    setTimeout(() => process.exit(1), 1000).unref();
+  });
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.fatal({ reason, promise }, 'Unhandled rejection — exiting');
+    setShuttingDown(true);
+    setTimeout(() => process.exit(1), 1000).unref();
+  });
 
   return workers;
 }
@@ -372,14 +420,14 @@ export async function waitForQueueToEmpty(queue: Queue, timeout = 60_000) {
     if (performance.now() - startTime > timeout) {
       logger.warn(
         { queue: queue.name, remainingCount: activeCount },
-        'Timeout reached while waiting for queue to empty',
+        'Timeout reached while waiting for queue to empty'
       );
       break;
     }
 
     logger.info(
       { queue: queue.name, count: activeCount },
-      'Waiting for queue to finish',
+      'Waiting for queue to finish'
     );
     await sleep(500);
   }

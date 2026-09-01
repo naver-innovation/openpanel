@@ -1,8 +1,4 @@
-import {
-  alphabetIds,
-  deprecated_timeRanges,
-  lineTypes,
-} from '@openpanel/constants';
+import { alphabetIds, lineTypes } from '@openpanel/constants';
 import type {
   IChartBreakdown,
   IChartEventFilter,
@@ -23,6 +19,26 @@ export const onlyReportEvents = (
 ) => {
   return series.filter((item) => item.type === 'event');
 };
+
+/**
+ * Prepend report-level global filters to every event series' own filters.
+ * Combining is AND (filters already combine with AND in getEventFiltersWhereClause).
+ * Formulas reference other series, so they inherit the global filters transitively
+ * and are left untouched here.
+ */
+export function mergeGlobalFilters(
+  series: IChartEventItem[],
+  globalFilters: IChartEventFilter[] = [],
+): IChartEventItem[] {
+  if (!globalFilters.length) {
+    return series;
+  }
+  return series.map((item) =>
+    item.type === 'event'
+      ? { ...item, filters: [...globalFilters, ...item.filters] }
+      : item,
+  );
+}
 
 export function transformFilter(
   filter: Partial<IChartEventFilter>,
@@ -82,10 +98,11 @@ export function transformReport(
     series:
       (report.events as IChartEventItem[]).map(transformReportEventItem) ?? [],
     breakdowns: report.breakdowns as IChartBreakdown[],
-    range:
-      report.range in deprecated_timeRanges
-        ? '30d'
-        : (report.range as IChartRange),
+    globalFilters:
+      (report.globalFilters as IChartEventFilter[] | null)?.map(
+        transformFilter,
+      ) ?? [],
+    range: report.range as IChartRange,
     previous: report.previous ?? false,
     formula: report.formula ?? undefined,
     metric: report.metric ?? 'sum',

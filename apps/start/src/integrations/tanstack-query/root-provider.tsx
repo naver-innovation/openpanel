@@ -1,12 +1,34 @@
 import type { AppRouter } from '@openpanel/trpc';
-import { QueryClient } from '@tanstack/react-query';
+import { MutationCache, QueryCache, QueryClient } from '@tanstack/react-query';
 import { createIsomorphicFn } from '@tanstack/react-start';
 import { getRequestHeaders } from '@tanstack/react-start/server';
-import { createTRPCClient, httpLink } from '@trpc/client';
+import { createTRPCClient, httpLink, TRPCClientError } from '@trpc/client';
 import { createTRPCOptionsProxy } from '@trpc/tanstack-react-query';
 import { useMemo } from 'react';
 import superjson from 'superjson';
 import { TRPCProvider } from '@/integrations/trpc/react';
+
+const DEFAULT_RETRY_COUNT = 1;
+
+function shouldRetryQuery(failureCount: number, error: unknown) {
+  if (error instanceof TRPCClientError) {
+    const status = error.data?.httpStatus;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      return false;
+    }
+  }
+  return failureCount < DEFAULT_RETRY_COUNT;
+}
+
+function handleUnauthorized(error: unknown) {
+  if (typeof window === 'undefined') return;
+  if (!(error instanceof TRPCClientError)) return;
+  if (error.data?.httpStatus !== 401) return;
+  if (window.location.pathname.startsWith('/login')) return;
+  // Hard navigation tears down in-flight refetches and WS subscriptions so
+  // the stale tab stops hammering the API after the session is gone.
+  window.location.assign('/login');
+}
 
 export const getIsomorphicHeaders = createIsomorphicFn()
   .server(() => {
@@ -80,10 +102,13 @@ export function getContext(apiUrl: string) {
         staleTime: 1000 * 60 * 5,
         gcTime: 1000 * 60 * 10,
         refetchOnReconnect: false,
+        retry: shouldRetryQuery,
       },
       dehydrate: { serializeData: superjson.serialize },
       hydrate: { deserializeData: superjson.deserialize },
     },
+    queryCache: new QueryCache({ onError: handleUnauthorized }),
+    mutationCache: new MutationCache({ onError: handleUnauthorized }),
   });
 
   // Create a tRPC client with cookies if provided

@@ -71,26 +71,37 @@ export function ReportSeriesItem({
           {showAddFilter && (
             <PropertiesCombobox
               event={chartEvent}
-              showCohorts
+              categories={['event', 'profile', 'group', 'cohort']}
               onSelect={(action) => {
+                const isCohortAction = action.value === 'cohort';
+                if (
+                  isCohortAction &&
+                  chartEvent.filters.some(
+                    (f) =>
+                      f.operator === 'inCohort' || f.operator === 'notInCohort',
+                  )
+                ) {
+                  return;
+                }
                 dispatch(
                   changeEvent({
                     ...chartEvent,
                     filters: [
                       ...chartEvent.filters,
-                      action.cohortId
+                      isCohortAction
                         ? {
                             id: shortId(),
-                            name: action.value,
+                            name: 'cohort',
                             operator: 'inCohort',
                             value: [],
-                            cohortId: action.cohortId,
+                            cohortIds: [],
                           }
                         : {
                             id: shortId(),
                             name: action.value,
                             operator: 'is',
                             value: [],
+                            type: 'string',
                           },
                     ],
                   }),
@@ -137,8 +148,11 @@ export function ReportSeriesItem({
         </div>
       )}
 
-      {/* Filters - only for events */}
-      {chartEvent && !isSelectManyEvents && <FiltersList event={chartEvent} />}
+      {/* Filters list. For multi-event series (retention) the first filter is
+          the event-name selector, so hide it and show only added filters. */}
+      {chartEvent && (
+        <FiltersList event={chartEvent} skipNameFilter={isSelectManyEvents} />
+      )}
     </div>
   );
 }
