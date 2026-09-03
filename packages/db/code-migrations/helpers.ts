@@ -1,3 +1,43 @@
+function maskUsername(username: string) {
+  const visibleUsername = username.slice(0, 2);
+  return `${visibleUsername}${'*'.repeat(
+    Math.max(4, username.length - visibleUsername.length)
+  )}`;
+}
+
+export function maskUrlCredentials(url: string | undefined) {
+  if (!url) return '<unset>';
+
+  try {
+    const parsed = new URL(url);
+
+    if (parsed.username) {
+      parsed.username = maskUsername(parsed.username);
+    }
+
+    if (parsed.password) {
+      parsed.password = '***';
+    }
+
+    const queryUser = parsed.searchParams.get('user');
+    if (queryUser) {
+      parsed.searchParams.set('user', maskUsername(queryUser));
+    }
+
+    if (parsed.searchParams.has('password')) {
+      parsed.searchParams.set('password', '***');
+    }
+
+    if (parsed.searchParams.has('sslpassword')) {
+      parsed.searchParams.set('sslpassword', '***');
+    }
+
+    return parsed.toString();
+  } catch {
+    return '<invalid-url>';
+  }
+}
+
 export function printBoxMessage(title: string, lines: (string | unknown)[]) {
   console.log('┌──┐');
   console.log('│');

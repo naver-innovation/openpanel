@@ -11,6 +11,7 @@ import {
   getIsDry,
   getIsSelfHosting,
   getShouldIgnoreRecord,
+  maskUrlCredentials,
   printBoxMessage,
 } from './helpers';
 
@@ -58,8 +59,11 @@ async function migrate() {
   ]);
 
   printBoxMessage('🌍 Environment', [
-    `POSTGRES:   ${process.env.DATABASE_URL}`,
-    `CLICKHOUSE: ${process.env.CLICKHOUSE_URL}`,
+    `POSTGRES:   ${maskUrlCredentials(process.env.DATABASE_URL)}`,
+    `CLICKHOUSE: ${(process.env.CLICKHOUSE_URL ?? '')
+      .split(',')
+      .map((url) => maskUrlCredentials(url.trim()))
+      .join(', ')}`,
   ]);
 
   if (!getIsSelfHosting()) {
