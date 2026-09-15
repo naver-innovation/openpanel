@@ -666,6 +666,10 @@ export async function getChartSql({
     sb.select.count = 'countDistinct(profile_id) as count';
   }
 
+  if (event.segment === 'device') {
+    sb.select.count = 'countDistinct(device_id) as count';
+  }
+
   if (event.segment === 'session') {
     sb.select.count = 'countDistinct(session_id) as count';
   }
@@ -738,6 +742,8 @@ export async function getChartSql({
   const inlineAllCohortsJoin = hasAllCohortsBreakdown
     ? `INNER JOIN (${buildAllCohortsMembershipQuery(projectId)}) AS _all_cohorts ON _all_cohorts.profile_id = e.profile_id `
     : '';
+  const uniqueCountColumn =
+    event.segment === 'device' ? 'device_id' : 'profile_id';
 
   if (breakdowns.length > 0) {
     // Pre-compute unique counts per breakdown group in a CTE, then JOIN it.
@@ -760,7 +766,9 @@ export async function getChartSql({
       );
       return `${propertyKey} as _uc_label_${index + 1}`;
     });
-    ucSelectParts.push('uniq(profile_id) as total_count');
+    ucSelectParts.push(
+      `uniq(${uniqueCountColumn}) as total_count`,
+    );
 
     const ucGroupByParts = breakdowns.map(
       (_, index) => `_uc_label_${index + 1}`
@@ -798,7 +806,7 @@ export async function getChartSql({
 
     addCte(
       '_uc',
-      `SELECT uniq(profile_id) as total_count FROM ${TABLE_NAMES.events} e ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${ucWhere}`
+      `SELECT uniq(${uniqueCountColumn}) as total_count FROM ${TABLE_NAMES.events} e ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${ucWhere}`
     );
 
     sb.select.total_unique_count =
@@ -1036,6 +1044,10 @@ export async function getAggregateChartSql({
   // Handle different segments
   if (event.segment === 'user') {
     sb.select.count = 'countDistinct(profile_id) as count';
+  }
+
+  if (event.segment === 'device') {
+    sb.select.count = 'countDistinct(device_id) as count';
   }
 
   if (event.segment === 'session') {
