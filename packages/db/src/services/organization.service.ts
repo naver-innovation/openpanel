@@ -6,6 +6,7 @@ import type { Invite, Prisma, ProjectAccess, User } from '../prisma-client';
 import { db } from '../prisma-client';
 import { createSqlBuilder } from '../sql-builder';
 import { getOrganizationAccess, getProjectAccess } from './access.service';
+import { getDefaultTimezone } from './organization.timezone';
 import type { IServiceProject } from './project.service';
 export type IServiceOrganization = Awaited<
   ReturnType<typeof db.organization.findUniqueOrThrow>
@@ -312,7 +313,7 @@ export async function getOrganizationSubscriptionChartEndDate(
   return endDate;
 }
 
-const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'UTC';
+const DEFAULT_TIMEZONE = getDefaultTimezone();
 
 export async function getSettingsForOrganization(organizationId: string) {
   const organization = await db.organization.findUniqueOrThrow({
@@ -340,3 +341,4 @@ export async function getSettingsForProject(projectId: string) {
     timezone: project.organization.timezone || DEFAULT_TIMEZONE,
   };
 }
+

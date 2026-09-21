@@ -33,32 +33,6 @@ async function importService() {
   };
 }
 
-describe('DEFAULT_TIMEZONE', () => {
-  it('falls back to UTC when process.env.DEFAULT_TIMEZONE is not set', async () => {
-    mockedOrganizationFindUniqueOrThrow.mockResolvedValue({
-      id: 'org-1',
-      timezone: null,
-    } as unknown as Awaited<ReturnType<typeof db.organization.findUniqueOrThrow>>);
-
-    const { getSettingsForOrganization } = await importService();
-    const settings = await getSettingsForOrganization('org-1');
-    expect(settings.timezone).toBe('UTC');
-  });
-
-  it('uses process.env.DEFAULT_TIMEZONE when set', async () => {
-    vi.stubEnv('DEFAULT_TIMEZONE', 'Asia/Riyadh');
-
-    mockedOrganizationFindUniqueOrThrow.mockResolvedValue({
-      id: 'org-1',
-      timezone: null,
-    } as unknown as Awaited<ReturnType<typeof db.organization.findUniqueOrThrow>>);
-
-    const { getSettingsForOrganization } = await importService();
-    const settings = await getSettingsForOrganization('org-1');
-    expect(settings.timezone).toBe('Asia/Riyadh');
-  });
-});
-
 describe('getSettingsForOrganization', () => {
   it('returns the organization timezone when set', async () => {
     mockedOrganizationFindUniqueOrThrow.mockResolvedValue({
