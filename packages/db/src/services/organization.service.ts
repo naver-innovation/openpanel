@@ -312,7 +312,7 @@ export async function getOrganizationSubscriptionChartEndDate(
   return endDate;
 }
 
-const DEFAULT_TIMEZONE = 'UTC';
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'UTC';
 
 export async function getSettingsForOrganization(organizationId: string) {
   const organization = await db.organization.findUniqueOrThrow({
