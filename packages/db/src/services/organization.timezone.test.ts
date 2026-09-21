@@ -48,4 +48,24 @@ describe('getDefaultTimezone', () => {
       'Invalid DEFAULT_TIMEZONE "Foo/Bar", falling back to UTC'
     );
   });
+
+  it('returns UTC and warns when DEFAULT_TIMEZONE is a Luxon-only zone like "local"', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('DEFAULT_TIMEZONE', 'local');
+    const getDefaultTimezone = await importTimezone();
+    expect(getDefaultTimezone()).toBe('UTC');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid DEFAULT_TIMEZONE "local", falling back to UTC'
+    );
+  });
+
+  it('returns UTC and warns when DEFAULT_TIMEZONE is a fixed-offset Luxon-only zone like "UTC+3"', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('DEFAULT_TIMEZONE', 'UTC+3');
+    const getDefaultTimezone = await importTimezone();
+    expect(getDefaultTimezone()).toBe('UTC');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid DEFAULT_TIMEZONE "UTC+3", falling back to UTC'
+    );
+  });
 });
