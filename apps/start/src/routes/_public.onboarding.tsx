@@ -5,8 +5,10 @@ import { z } from 'zod';
 import { Or } from '@/components/auth/or';
 import { SignInGithub } from '@/components/auth/sign-in-github';
 import { SignInGoogle } from '@/components/auth/sign-in-google';
+import { SignInNeoid } from '@/components/auth/sign-in-neoid';
 import { SignUpEmailForm } from '@/components/auth/sign-up-email-form';
 import FullPageLoadingState from '@/components/full-page-loading-state';
+import { useAppContext } from '@/hooks/use-app-context';
 import { useTRPC } from '@/integrations/trpc/react';
 import { createEntityTitle, PAGE_TITLES } from '@/utils/title';
 
@@ -42,6 +44,7 @@ export const Route = createFileRoute('/_public/onboarding')({
 
 function Component() {
   const { inviteId } = Route.useSearch();
+  const { isNeoidEnabled } = useAppContext();
   const trpc = useTRPC();
   const { data: invite } = useQuery(
     trpc.organization.getInvite.queryOptions(
@@ -119,6 +122,7 @@ function Component() {
       )}
 
       <div className="space-y-6">
+        {isNeoidEnabled && <SignInNeoid inviteId={inviteId} type="sign-up" />}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <SignInGithub inviteId={inviteId} type="sign-up" />
           <SignInGoogle inviteId={inviteId} type="sign-up" />

@@ -32,7 +32,10 @@ import {
 } from './controllers/healthcheck.controller';
 import { ipHook } from './hooks/ip.hook';
 import { requestIdHook } from './hooks/request-id.hook';
-import { requestLoggingHook } from './hooks/request-logging.hook';
+import {
+  isNeoidAuthRequest,
+  requestLoggingHook,
+} from './hooks/request-logging.hook';
 import { timestampHook } from './hooks/timestamp.hook';
 import { toFastifyHandler } from '@better-agent/adapters';
 import { chatApp } from './agents/app';
@@ -174,6 +177,17 @@ export async function buildApp(
         createContext,
         onError(ctx) {
           if (ctx.error.code === 'UNAUTHORIZED' && ctx.path === 'organization.list') {
+            return;
+          }
+          if (ctx.path === 'neoidAuth.start') {
+            ctx.req.log.error(
+              {
+                path: ctx.path,
+                errorCode: ctx.error.code,
+                requestId: ctx.req.id,
+              },
+              'trpc error',
+            );
             return;
           }
           ctx.req.log.error(
@@ -395,20 +409,23 @@ export async function buildApp(
       // log as warn so they don't drown out real server errors.
       const label =
         error instanceof HttpError ? 'internal server error' : 'request error';
+      const neoidAuth = isNeoidAuthRequest(request.url);
       const reqCtx = {
         id: request.id,
-        url: request.url,
+        url: neoidAuth ? request.url.split('?')[0] : request.url,
         method: request.method,
-        query: request.query,
-        headers: request.headers,
-        body:
-          (request as FastifyRequest & { rawBody?: string }).rawBody ??
-          request.body,
+        query: neoidAuth ? undefined : request.query,
+        headers: neoidAuth ? undefined : request.headers,
+        body: neoidAuth
+          ? undefined
+          : ((request as FastifyRequest & { rawBody?: string }).rawBody ??
+            request.body),
       };
+      const loggedError = neoidAuth ? { code, status } : error;
       if (status >= 500) {
-        request.log.error({ err: error, req: reqCtx }, label);
+        request.log.error({ err: loggedError, req: reqCtx }, label);
       } else {
-        request.log.warn({ err: error, req: reqCtx }, label);
+        request.log.warn({ err: loggedError, req: reqCtx }, label);
       }
     }
 

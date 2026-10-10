@@ -5,7 +5,9 @@ import { Or } from '@/components/auth/or';
 import { SignInEmailForm } from '@/components/auth/sign-in-email-form';
 import { SignInGithub } from '@/components/auth/sign-in-github';
 import { SignInGoogle } from '@/components/auth/sign-in-google';
+import { SignInNeoid } from '@/components/auth/sign-in-neoid';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { useAppContext } from '@/hooks/use-app-context';
 import { useCookieStore } from '@/hooks/use-cookie-store';
 import { createTitle, PAGE_TITLES } from '@/utils/title';
 
@@ -26,6 +28,7 @@ export const Route = createFileRoute('/_login/login')({
 
 function LoginPage() {
   const { error, correlationId, inviteId } = Route.useSearch();
+  const { isNeoidEnabled } = useAppContext();
   const [lastProvider] = useCookieStore<null | string>(
     'last-auth-provider',
     null
@@ -73,6 +76,13 @@ function LoginPage() {
       )}
 
       <div className="space-y-4">
+        {isNeoidEnabled && (
+          <SignInNeoid
+            inviteId={inviteId}
+            isLastUsed={lastProvider === 'neoid'}
+            type="sign-in"
+          />
+        )}
         <SignInGoogle
           inviteId={inviteId}
           isLastUsed={lastProvider === 'google'}

@@ -166,6 +166,8 @@ const sessionScopeMiddleware = t.middleware(async ({ ctx, next }) => {
 export const publicProcedure = t.procedure
   .use(loggerMiddleware)
   .use(sessionScopeMiddleware);
+// OAuth start requests can carry an invitation token. Keep it out of mutation logs.
+export const publicProcedureWithoutLogging = t.procedure.use(sessionScopeMiddleware);
 export const protectedProcedure = t.procedure
   .use(enforceUserIsAuthed)
   .use(enforceAccess)

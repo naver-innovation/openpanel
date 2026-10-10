@@ -4,6 +4,19 @@ import { path, pick } from 'ramda';
 const ignoreLog = ['/healthcheck', '/healthz', '/metrics', '/misc'];
 const ignoreMethods = ['OPTIONS'];
 
+export function isNeoidCallbackRequest(url: string) {
+  return url.split('?')[0] === '/oauth/neoid/callback';
+}
+
+export function isNeoidAuthRequest(url: string) {
+  const pathname = url.split('?')[0] ?? '';
+  return (
+    isNeoidCallbackRequest(url) ||
+    (pathname.startsWith('/trpc/') &&
+      pathname.slice('/trpc/'.length).split(',').includes('neoidAuth.start'))
+  );
+}
+
 const getTrpcInput = (
   request: FastifyRequest
 ): Record<string, unknown> | undefined => {
@@ -30,10 +43,12 @@ export async function requestLoggingHook(
       {
         url: request.url.split('?')[0],
         method: request.method,
-        input: getTrpcInput(request),
+        input: isNeoidAuthRequest(request.url)
+          ? undefined
+          : getTrpcInput(request),
         elapsed: reply.elapsedTime,
       },
-      'request done',
+      'request done'
     );
   } else {
     const payload: {
@@ -43,7 +58,9 @@ export async function requestLoggingHook(
       headers: Record<string, string | string[] | undefined>;
       body?: unknown;
     } = {
-      url: request.url,
+      url: isNeoidCallbackRequest(request.url)
+        ? '/oauth/neoid/callback'
+        : request.url,
       method: request.method,
       elapsed: reply.elapsedTime,
       headers: pick(

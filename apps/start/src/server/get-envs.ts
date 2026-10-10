@@ -10,6 +10,11 @@ export const getServerEnvs = createServerFn().handler(() => {
     isSelfHosted: process.env.SELF_HOSTED !== undefined,
     isMaintenance: process.env.MAINTENANCE === '1',
     isDemo: process.env.DEMO_USER_ID !== undefined,
+    isNeoidEnabled: Boolean(
+      process.env.NEOID_ENTERPRISE_URL &&
+        process.env.NEOID_CLIENT_ID &&
+        process.env.NEOID_REDIRECT_URI
+    ),
   };
 
   return envs;

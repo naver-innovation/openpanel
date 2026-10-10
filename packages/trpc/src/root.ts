@@ -12,6 +12,7 @@ import { gscRouter } from './routers/gsc';
 import { importRouter } from './routers/import';
 import { insightRouter } from './routers/insight';
 import { integrationRouter } from './routers/integration';
+import { neoidAuthRouter } from './routers/neoid-auth';
 import { notificationRouter } from './routers/notification';
 import { onboardingRouter } from './routers/onboarding';
 import { organizationRouter } from './routers/organization';
@@ -50,6 +51,7 @@ export const appRouter = createTRPCRouter({
   integration: integrationRouter,
   import: importRouter,
   auth: authRouter,
+  neoidAuth: neoidAuthRouter,
   subscription: subscriptionRouter,
   overview: overviewRouter,
   realtime: realtimeRouter,
