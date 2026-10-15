@@ -7,6 +7,7 @@ import {
   EqualApproximatelyIcon,
   type LucideIcon,
   SigmaIcon,
+  SmartphoneIcon,
   TrendingDownIcon,
   TrendingUpIcon,
   UserCheck2Icon,
@@ -44,6 +45,7 @@ export function ReportSegment({
   const Icons: Record<IChartEventSegment, LucideIcon> = {
     event: ActivityIcon,
     user: UsersIcon,
+    device: SmartphoneIcon,
     session: ClockIcon,
     group: Building2Icon,
     user_average: UserCheck2Icon,

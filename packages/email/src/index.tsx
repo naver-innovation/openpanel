@@ -51,7 +51,10 @@ export async function sendEmail<T extends TemplateKey>(
   const props = template.schema.safeParse(data);
 
   if (!props.success) {
-    console.error('Failed to parse data', props.error);
+    console.error('Failed to parse email data', {
+      templateKey,
+      reason: 'invalid_template_data',
+    });
     return null;
   }
 
@@ -66,9 +69,12 @@ export async function sendEmail<T extends TemplateKey>(
     });
 
     if (unsubscribed) {
-      console.log(
-        `Skipping email to ${to} - unsubscribed from ${template.category}`,
-      );
+      console.log('Email delivery skipped', {
+        templateKey,
+        to: redactEmail(to),
+        category: template.category,
+        reason: 'unsubscribed',
+      });
       return null;
     }
   }
@@ -97,19 +103,22 @@ export async function sendEmail<T extends TemplateKey>(
         headers,
       });
       return res;
-    } catch (error) {
-      console.error('Failed to send email via SMTP', error);
+    } catch {
+      console.error('Email delivery failed', {
+        templateKey,
+        to: redactEmail(to),
+        reason: 'smtp_provider_error',
+      });
       return null;
     }
   }
 
   if (!process.env.RESEND_API_KEY) {
-    // Never dump the payload: template data carries password-reset and
-    // unsubscribe links, and the recipient is personal data
-    // (GHSA-xr2x-w49w-hp2c).
-    console.warn(
-      `Email not sent (email_provider_not_configured): template=${templateKey} to=${redactEmail(to)}`,
-    );
+    console.warn('Email delivery skipped', {
+      templateKey,
+      to: redactEmail(to),
+      reason: 'resend_api_key_missing',
+    });
     return null;
   }
 
@@ -127,8 +136,13 @@ export async function sendEmail<T extends TemplateKey>(
       throw new Error(res.error.message);
     }
     return res;
-  } catch (error) {
-    console.error('Failed to send email via Resend', error);
+  } catch {
+    // SECURITY(WASL): Do not log the original provider error.
+    console.error('Email delivery failed', {
+      templateKey,
+      to: redactEmail(to),
+      reason: 'provider_error',
+    });
     return null;
   }
 }

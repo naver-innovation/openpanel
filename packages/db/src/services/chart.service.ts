@@ -772,6 +772,10 @@ export async function getChartSql({
     sb.select.count = 'countDistinct(profile_id) as count';
   }
 
+  if (event.segment === 'device') {
+    sb.select.count = 'countDistinct(device_id) as count';
+  }
+
   if (event.segment === 'session') {
     sb.select.count = 'countDistinct(session_id) as count';
   }
@@ -844,7 +848,11 @@ export async function getChartSql({
   // cost. uniq states merge losslessly, so the result matches the two-scan
   // form exactly. (The old _uc scan nominally excluded a `bar` filter, but
   // nothing sets sb.where.bar anymore — the exclusion was dead code.)
-  sb.select.uc_state = 'uniqState(profile_id) as _uc_state';
+  // The unique-count column follows the segment, so device reports keep
+  // counting distinct device_id while every other segment stays on profile_id.
+  const uniqueCountColumn =
+    event.segment === 'device' ? 'device_id' : 'profile_id';
+  sb.select.uc_state = `uniqState(${uniqueCountColumn}) as _uc_state`;
 
   const totalCountPartition = breakdowns
     .map((_, index) => `label_${index + 1}`)
@@ -1119,6 +1127,10 @@ export async function getAggregateChartSql({
   // Handle different segments
   if (event.segment === 'user') {
     sb.select.count = 'countDistinct(profile_id) as count';
+  }
+
+  if (event.segment === 'device') {
+    sb.select.count = 'countDistinct(device_id) as count';
   }
 
   if (event.segment === 'session') {

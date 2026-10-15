@@ -1,5 +1,6 @@
 import * as HyperDX from '@hyperdx/node-opentelemetry';
 import pino, { type Logger } from 'pino';
+import { getLogTimestamp } from './log-time';
 
 export type ILogger = Logger;
 
@@ -20,7 +21,7 @@ export const rawStdoutWrite = process.stdout.write.bind(process.stdout);
 export const rawStderrWrite = process.stderr.write.bind(process.stderr);
 
 // Substring match (lowercased). Catches camelCase, snake_case, prefixed and
-// suffixed variants in one entry — e.g. 'token' covers accessToken,
+// suffixed variants in one entry - e.g. 'token' covers accessToken,
 // refresh_token, jwtToken, etc.
 export const SENSITIVE_KEY_PATTERNS = [
   'password',
@@ -149,6 +150,7 @@ export function createLogger({ name }: { name: string }): ILogger {
     name: service,
     level: logLevel,
     enabled: !silent,
+    timestamp: () => `,"time":"${getLogTimestamp()}"`,
     formatters: {
       log: (obj) => {
         return redactSensitive(obj) as Record<string, unknown>;
@@ -169,7 +171,7 @@ export function createLogger({ name }: { name: string }): ILogger {
             target: 'pino-pretty',
             options: {
               colorize: true,
-              translateTime: 'SYS:standard',
+              translateTime: false,
               ignore: 'pid,hostname,service',
             },
           }

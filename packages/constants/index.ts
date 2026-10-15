@@ -205,6 +205,7 @@ export const chartTypes = {
 export const chartSegments = {
   event: 'All events',
   user: 'Unique users',
+  device: 'Unique devices',
   session: 'Unique sessions',
   group: 'Unique groups',
   user_average: 'Average users',
