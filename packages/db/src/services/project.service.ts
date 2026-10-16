@@ -1,8 +1,13 @@
 import { cacheable } from '@openpanel/redis';
 import sqlstring from 'sqlstring';
-import { chQuery, TABLE_NAMES } from '../clickhouse/client';
-import { ClientType, type Prisma, type Project } from '../prisma-client';
-import { db } from '../prisma-client';
+import {
+  ch,
+  chQuery,
+  convertClickhouseDateToJs,
+  TABLE_NAMES,
+} from '../clickhouse/client';
+import { clix } from '../clickhouse/query-builder';
+import { db, type Prisma, type Project } from '../prisma-client';
 
 export type IServiceProject = Project;
 export type IServiceProjectWithClients = Prisma.ProjectGetPayload<{
@@ -92,11 +97,58 @@ export async function getProjects({
   return projects;
 }
 
+/**
+ * Fast approximate count of a project's events (excluding session_start /
+ * session_end), read from distinct_event_names_mv instead of the raw events
+ * table.
+ *
+ * Why not count raw events: `name NOT IN (...)` is a negation, so it can't
+ * prune with idx_name and scans the project's whole events slice — and this
+ * runs from the sessions job on every batch. The MV already accumulates
+ * `count() AS event_count` per (project_id, name) insert block, so summing
+ * it reads a few thousand pre-aggregated rows instead of billions of raw
+ * ones.
+ *
+ * Why approximate: event_count is a plain UInt64, not an aggregate state,
+ * so MV counter rows whose (project_id, name, created_at) sort key collides
+ * collapse on merge keeping only one block's count. Live ingestion rarely
+ * ties on the ms timestamp; bulk imports with coarse timestamps are where
+ * collisions come from. The error is strictly downward (measured 0.0011%
+ * low on a 1.46B-event project) — acceptable for this display/onboarding
+ * counter.
+ */
 export const getProjectEventsCount = async (projectId: string) => {
   const res = await chQuery<{ count: number }>(
-    `SELECT count(*) as count FROM ${TABLE_NAMES.events} WHERE project_id = ${sqlstring.escape(projectId)} AND name NOT IN ('session_start', 'session_end')`
+    `SELECT sum(event_count) as count FROM ${TABLE_NAMES.event_names_mv} WHERE project_id = ${sqlstring.escape(projectId)} AND name NOT IN ('session_start', 'session_end')`
   );
   return res[0]?.count;
+};
+
+/**
+ * Newest event timestamp per project, for the whole instance in one query.
+ * Reads the same pre-aggregated MV as getProjectEventsCount (it stores
+ * max(created_at) per (project_id, name) block), so this scans thousands of
+ * rows instead of the raw events table. Projects with no events are absent
+ * from the map.
+ */
+export const getLastEventPerProject = async (): Promise<Map<string, Date>> => {
+  const res = await clix(ch)
+    .select<{ project_id: string; last_event_at: string }>([
+      'project_id',
+      'max(created_at) AS last_event_at',
+    ])
+    .from(TABLE_NAMES.event_names_mv)
+    // Session rows are worker-generated (the reaper can emit session_end after
+    // tracking already stopped) — only real tracking activity should count.
+    .where('name', 'NOT IN', ['session_start', 'session_end'])
+    .groupBy(['project_id'])
+    .execute();
+  return new Map(
+    res.map((row) => [
+      row.project_id,
+      convertClickhouseDateToJs(row.last_event_at),
+    ])
+  );
 };
 
 /**
@@ -127,7 +179,9 @@ export async function resolveClientProjectId({
   }
 
   if (!inputProjectId) {
-    throw new Error('projectId is required when using a root (organization-level) client');
+    throw new Error(
+      'projectId is required when using a root (organization-level) client'
+    );
   }
 
   const project = await db.project.findFirst({
@@ -136,7 +190,9 @@ export async function resolveClientProjectId({
   });
 
   if (!project) {
-    throw new Error('Project not found or does not belong to your organization');
+    throw new Error(
+      'Project not found or does not belong to your organization'
+    );
   }
 
   return inputProjectId;

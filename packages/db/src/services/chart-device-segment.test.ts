@@ -70,8 +70,14 @@ describe('chart.service / device segment', () => {
       });
 
       expect(sql).toContain('countDistinct(device_id) as count');
-      expect(sql).toContain('uniq(device_id) as total_count');
-      expect(sql).not.toContain('uniq(profile_id) as total_count');
+      // Single-pass shape: the unique state is built from device_id for the
+      // device segment, then merged into the range-wide total.
+      expect(sql).toContain('uniqState(device_id) as _uc_state');
+      expect(sql).not.toContain('uniqState(profile_id) as _uc_state');
+      expect(sql).toContain('uniqMerge(_uc_state) OVER () as total_count');
+      // Guard against the two-scan _uc CTE shape making a comeback.
+      expect(sql).not.toContain('_uc AS (');
+      expect(sql.match(/FROM events e/g)).toHaveLength(1);
 
       await explain(sql);
     }
@@ -91,12 +97,19 @@ describe('chart.service / device segment', () => {
       });
 
       expect(sql).toContain('countDistinct(device_id) as count');
-      expect(sql).toContain('uniq(device_id) as total_count');
-      expect(sql).not.toContain('uniq(profile_id) as total_count');
+      expect(sql).toContain('uniqState(device_id) as _uc_state');
+      expect(sql).not.toContain('uniqState(profile_id) as _uc_state');
+      expect(sql).toContain(
+        'uniqMerge(_uc_state) OVER (PARTITION BY label_1) as total_count',
+      );
+      expect(sql).not.toContain('_uc AS (');
+      expect(sql).not.toContain('LEFT ANY JOIN _uc');
+      expect(sql.match(/FROM events e/g)).toHaveLength(1);
 
       await explain(sql);
     }
   );
+
 
   itCH('uses device_id for aggregate count with breakdown', async () => {
     const sql = await getAggregateChartSql({

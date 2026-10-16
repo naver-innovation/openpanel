@@ -10,6 +10,7 @@ import type {
 } from '@openpanel/validation';
 
 import { cohortComputeQueue } from '@openpanel/queue';
+import type { ClickHouseSettings } from '@clickhouse/client';
 import {
   TABLE_NAMES,
   ch,
@@ -17,14 +18,86 @@ import {
   getReplicatedTableName,
 } from '../clickhouse/client';
 import { db } from '../prisma-client';
-import { buildFilterWhere } from './filter-where.service';
+import { buildFilterWhere, PROFILE_TABLE_COLUMNS } from './filter-where.service';
 import {
   getProfiles,
   profileSearchSql,
   type IServiceProfile,
 } from './profile.service';
 
-export const COHORT_MATERIALIZE_LIMIT = 10000;
+// Max members materialized into cohort_members per compute. Cohorts larger
+// than this are silently truncated to an arbitrary subset, so deployments
+// with bigger cohorts need to raise it — env-tunable to avoid an image
+// rebuild for what is really a sizing knob.
+//
+// Strictly a positive safe integer: anything else falls back to the
+// default. Number.parseInt would accept '5000junk' or '-1' (LIMIT -1 is a
+// query error), and 0 is falsy at the `limit ? LIMIT ... : ''` call sites,
+// which would silently remove the cap entirely.
+const COHORT_MATERIALIZE_LIMIT_RAW = process.env.COHORT_MATERIALIZE_LIMIT;
+const COHORT_MATERIALIZE_LIMIT_PARSED =
+  COHORT_MATERIALIZE_LIMIT_RAW && /^\d+$/.test(COHORT_MATERIALIZE_LIMIT_RAW)
+    ? Number(COHORT_MATERIALIZE_LIMIT_RAW)
+    : Number.NaN;
+export const COHORT_MATERIALIZE_LIMIT =
+  Number.isSafeInteger(COHORT_MATERIALIZE_LIMIT_PARSED) &&
+  COHORT_MATERIALIZE_LIMIT_PARSED > 0
+    ? COHORT_MATERIALIZE_LIMIT_PARSED
+    : 10000;
+
+// Strictly a positive safe integer, or undefined — same validation rationale
+// as COHORT_MATERIALIZE_LIMIT above.
+function parsePositiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw || !/^\d+$/.test(raw)) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+// Property cohorts aggregate every profile row for the project, so they are
+// the one cohort query that can outgrow the server's memory headroom. Two
+// opt-in knobs bound them; with NEITHER set, no per-query settings are
+// applied and the server's own defaults govern — upstream behavior is
+// unchanged.
+//
+//   COHORT_QUERY_MEMORY_LIMIT_BYTES  hard cap for these queries
+//   COHORT_QUERY_SPILL_BYTES         GROUP BY spills to disk past this
+//
+// A GROUP BY only starts spilling once it crosses the threshold, so the
+// spill threshold must sit BELOW the memory limit — inverted, the query is
+// killed before it ever writes to disk (ClickHouse Cloud ships exactly that
+// inversion by default, which is how these queries OOM'd instead of
+// spilling). When only the limit is set — or the pair is inverted — the
+// threshold derives as limit/3. Spilling early costs little: the volume
+// spilled is set by the data, not the threshold (measured on 8.3M profiles,
+// ~281MB spilled whether the threshold was 300, 512 or 768MB, at
+// 6.9s/6.7s/6.0s, while peak memory climbed 410/695/893MiB).
+const COHORT_QUERY_MEMORY_LIMIT_BYTES = parsePositiveIntEnv(
+  'COHORT_QUERY_MEMORY_LIMIT_BYTES',
+);
+const COHORT_QUERY_SPILL_BYTES_RAW = parsePositiveIntEnv(
+  'COHORT_QUERY_SPILL_BYTES',
+);
+const COHORT_QUERY_SPILL_BYTES =
+  COHORT_QUERY_MEMORY_LIMIT_BYTES !== undefined &&
+  (COHORT_QUERY_SPILL_BYTES_RAW === undefined ||
+    COHORT_QUERY_SPILL_BYTES_RAW >= COHORT_QUERY_MEMORY_LIMIT_BYTES)
+    ? // Clamped to 1: a (nonsensical) limit below 3 would derive 0, and
+      // max_bytes_before_external_group_by = 0 means spilling DISABLED —
+      // the exact inversion this derivation exists to prevent.
+      Math.max(1, Math.floor(COHORT_QUERY_MEMORY_LIMIT_BYTES / 3))
+    : COHORT_QUERY_SPILL_BYTES_RAW;
+
+export const PROFILE_COHORT_QUERY_SETTINGS: ClickHouseSettings = {
+  ...(COHORT_QUERY_SPILL_BYTES !== undefined
+    ? { max_bytes_before_external_group_by: String(COHORT_QUERY_SPILL_BYTES) }
+    : {}),
+  ...(COHORT_QUERY_MEMORY_LIMIT_BYTES !== undefined
+    ? { max_memory_usage: String(COHORT_QUERY_MEMORY_LIMIT_BYTES) }
+    : {}),
+};
 
 function buildTimeConstraint(timeframe: Timeframe): string {
   if (timeframe.type === 'relative') {
@@ -36,11 +109,11 @@ function buildTimeConstraint(timeframe: Timeframe): string {
     return `created_at >= toDate(now() - INTERVAL ${days} DAY)`;
   }
 
-  const start = timeframe.start;
+  const start = sqlstring.escape(timeframe.start);
   if (timeframe.end) {
-    return `created_at BETWEEN toDate('${start}') AND toDate('${timeframe.end}')`;
+    return `created_at BETWEEN toDate(${start}) AND toDate(${sqlstring.escape(timeframe.end)})`;
   }
-  return `created_at >= toDate('${start}')`;
+  return `created_at >= toDate(${start})`;
 }
 
 function getFrequencyOperator(frequency: Frequency): string {
@@ -54,6 +127,45 @@ function getFrequencyOperator(frequency: Frequency): string {
     default:
       return `>= ${frequency.count}`;
   }
+}
+
+// "Exactly 0" and "at most 0" both mean the profile never did the event.
+// Neither can be expressed as a HAVING on the summary MVs: those hold a row
+// only for a (project, profile, event, day) that actually happened, so every
+// group that reaches the HAVING already has countMerge(event_count) >= 1 and
+// the criterion returns nothing. The query has to be inverted instead.
+//
+// `gte 0` is not "never" — it matches every profile — and zFrequency rejects
+// it, so it stays on the ordinary HAVING path.
+function isNeverFrequency(frequency: Frequency): boolean {
+  return (
+    frequency.count === 0 &&
+    (frequency.operator === 'eq' || frequency.operator === 'lte')
+  );
+}
+
+// Every profile in the project except the ones the summary MV knows about.
+// The timeframe stays inside the subquery, so "never did X in the last 30
+// days" keeps including someone who did X 60 days ago, matching how the
+// timeframe control reads for a positive criterion.
+//
+// DISTINCT rather than FINAL: profiles is a ReplacingMergeTree and FINAL
+// cannot spill to disk, so on wide projects the dedup is what runs out of
+// memory (same reason buildPropertyBasedCohortQuery groups instead of reading
+// through FINAL). Only the id is needed here, so deduplicating it is enough —
+// and the other branches of this function also emit one row per profile, which
+// the INTERSECT / UNION DISTINCT combination in computeEventBasedCohort
+// depends on.
+function buildNeverDidEventQuery(
+  projectId: string,
+  didEventQuery: string,
+): string {
+  return `
+    SELECT DISTINCT id AS profile_id
+    FROM ${TABLE_NAMES.profiles}
+    WHERE project_id = ${sqlstring.escape(projectId)}
+      AND id NOT IN (${didEventQuery})
+  `;
 }
 
 export function buildEventCriteriaQuery(
@@ -116,10 +228,27 @@ export function buildEventCriteriaQuery(
       .join(' OR ');
 
     if (frequency) {
+      if (isNeverFrequency(frequency)) {
+        // "Never did X where plan = pro" reads as "has no matching (event,
+        // property) row", so the property predicates go inside the exclusion:
+        // someone who did the event with plan = free is a member.
+        return buildNeverDidEventQuery(
+          projectId,
+          `
+            SELECT profile_id
+            FROM ${TABLE_NAMES.event_property_profile_summary_mv}
+            WHERE project_id = ${sqlstring.escape(projectId)}
+              AND name = ${sqlstring.escape(name)}
+              AND ${timeConstraint.replace('created_at', 'event_date')}
+              AND (${propertyConditions})
+          `,
+        );
+      }
+
       const frequencyOp = getFrequencyOperator(frequency);
       return `
         SELECT profile_id
-        FROM ${TABLE_NAMES.profile_event_property_summary_mv}
+        FROM ${TABLE_NAMES.event_property_profile_summary_mv}
         WHERE project_id = ${sqlstring.escape(projectId)}
           AND name = ${sqlstring.escape(name)}
           AND ${timeConstraint.replace('created_at', 'event_date')}
@@ -131,7 +260,7 @@ export function buildEventCriteriaQuery(
 
     return `
       SELECT DISTINCT profile_id
-      FROM ${TABLE_NAMES.profile_event_property_summary_mv}
+      FROM ${TABLE_NAMES.event_property_profile_summary_mv}
       WHERE project_id = ${sqlstring.escape(projectId)}
         AND name = ${sqlstring.escape(name)}
         AND ${timeConstraint.replace('created_at', 'event_date')}
@@ -140,10 +269,23 @@ export function buildEventCriteriaQuery(
   }
 
   if (frequency) {
+    if (isNeverFrequency(frequency)) {
+      return buildNeverDidEventQuery(
+        projectId,
+        `
+          SELECT profile_id
+          FROM ${TABLE_NAMES.event_profile_summary_mv}
+          WHERE project_id = ${sqlstring.escape(projectId)}
+            AND name = ${sqlstring.escape(name)}
+            AND ${timeConstraint.replace('created_at', 'event_date')}
+        `,
+      );
+    }
+
     const frequencyOp = getFrequencyOperator(frequency);
     return `
       SELECT profile_id
-      FROM ${TABLE_NAMES.profile_event_summary_mv}
+      FROM ${TABLE_NAMES.event_profile_summary_mv}
       WHERE project_id = ${sqlstring.escape(projectId)}
         AND name = ${sqlstring.escape(name)}
         AND ${timeConstraint.replace('created_at', 'event_date')}
@@ -154,35 +296,105 @@ export function buildEventCriteriaQuery(
 
   return `
     SELECT DISTINCT profile_id
-    FROM ${TABLE_NAMES.profile_event_summary_mv}
+    FROM ${TABLE_NAMES.event_profile_summary_mv}
     WHERE project_id = ${sqlstring.escape(projectId)}
       AND name = ${sqlstring.escape(name)}
       AND ${timeConstraint.replace('created_at', 'event_date')}
   `;
 }
 
-export function buildPropertyBasedCohortQuery(
-  projectId: string,
+// SQL for a profile filter's column: either a properties Map lookup or a
+// plain column, qualified with the table name. The column name is an
+// identifier and cannot be escaped like a value, so it must come from the
+// allowlist (GHSA-gvwr-5684-wjqc).
+export function profileColumnAccess(name: string): string {
+  const normalizedName = name.replace(/^profile\./, 'profiles.');
+  if (normalizedName.startsWith('profiles.properties.')) {
+    const propKey = normalizedName.replace('profiles.properties.', '');
+    // Escaped: cohort definitions come from the API, so the key is
+    // user-controlled — a quote in it must not terminate the literal.
+    return `profiles.properties[${sqlstring.escape(propKey)}]`;
+  }
+  const column = normalizedName.replace(/^profiles\./, '');
+  if (!PROFILE_TABLE_COLUMNS.has(column)) {
+    throw new Error(`Unknown profile filter column: ${name}`);
+  }
+  return `profiles.${column}`;
+}
+
+function buildProfileCohortHavingClause(
   definition: PropertyBasedCohortDefinition,
-): string {
+): string | null {
   const { properties, operator } = definition.criteria;
-  const filterWhere = getProfileFiltersWhereClause(properties);
+
+  // Every argMax below must order the candidate rows IDENTICALLY, or
+  // equal-version rows with conflicting fields could each win a different
+  // column — matching an AND cohort against a synthetic combination no
+  // stored row contains. One shared key — the version column, tie-broken by
+  // a hash of every referenced column — makes all aggregates pick their
+  // value from the same winning row, deterministically. The hash (rather
+  // than the raw value tuple) keeps the per-group comparison state at a
+  // fixed 8 bytes: measured on 8.8M profiles, the raw-tuple key cost ~40%
+  // extra query time while the hashed key is free. A wrong tie-break would
+  // need a version tie AND a 64-bit collision between different rows — and
+  // even then every aggregate in the query still elects the same row.
+  const referencedColumns = Array.from(
+    new Set(properties.map((f) => profileColumnAccess(f.name))),
+  );
+  const latestRowKey = `tuple(last_seen_at, cityHash64(${referencedColumns.join(', ')}))`;
+
+  const filterWhere = getProfileFiltersWhereClause(properties, {
+    latestPerProfileKey: latestRowKey,
+  });
   const filterClauses = Object.values(filterWhere);
 
   if (filterClauses.length === 0) {
-    return `SELECT id as profile_id FROM ${TABLE_NAMES.profiles} FINAL WHERE 1=0`;
+    return null;
   }
 
-  const filterClause = filterClauses.join(
-    operator === 'and' ? ' AND ' : ' OR ',
-  );
+  return filterClauses.join(operator === 'and' ? ' AND ' : ' OR ');
+}
 
+export function buildPropertyBasedCohortQuery(
+  projectId: string,
+  definition: PropertyBasedCohortDefinition,
+  limit?: number,
+): string {
+  const havingClause = buildProfileCohortHavingClause(definition);
+
+  if (!havingClause) {
+    return `SELECT id as profile_id FROM ${TABLE_NAMES.profiles} WHERE 1=0`;
+  }
+
+  // Resolve each profile's newest row with GROUP BY + argMax instead of
+  // FINAL: FINAL cannot spill to disk, so on wide projects the dedup itself
+  // is what runs out of memory. The aggregate shape spills normally under
+  // PROFILE_COHORT_QUERY_SETTINGS, and filters on aggregates move to HAVING.
   return `
     SELECT id as profile_id
-    FROM ${TABLE_NAMES.profiles} FINAL
+    FROM ${TABLE_NAMES.profiles}
     WHERE project_id = ${sqlstring.escape(projectId)}
-      AND (${filterClause})
+    GROUP BY id
+    HAVING (${havingClause})
+    ${limit ? `LIMIT ${limit}` : ''}
   `;
+}
+
+// Every criterion emits one row per matching profile under the column name
+// profile_id, which is what lets them be combined as sets.
+export function buildEventBasedCohortQuery(
+  projectId: string,
+  definition: EventBasedCohortDefinition,
+): string {
+  const { events, operator } = definition.criteria;
+
+  const queries = events.map((eventCriteria) =>
+    buildEventCriteriaQuery(projectId, eventCriteria),
+  );
+
+  return operator === 'and'
+    ? queries.join(' INTERSECT ')
+    : queries.join(' UNION DISTINCT ');
 }
 
 export async function computeEventBasedCohort(
@@ -190,18 +402,18 @@ export async function computeEventBasedCohort(
   definition: EventBasedCohortDefinition,
   limit?: number,
 ): Promise<string[]> {
-  const { events, operator } = definition.criteria;
+  const combinedQuery = buildEventBasedCohortQuery(projectId, definition);
 
-  const queries = events.map((eventCriteria) =>
-    buildEventCriteriaQuery(projectId, eventCriteria),
-  );
-
-  const combinedQuery =
-    operator === 'and'
-      ? queries.join(' INTERSECT ')
-      : queries.join(' UNION DISTINCT ');
-
-  const finalQuery = limit ? `${combinedQuery} LIMIT ${limit}` : combinedQuery;
+  // The LIMIT has to wrap the combination, not trail it: appended to an
+  // INTERSECT / UNION chain, ClickHouse applies it to the last SELECT alone.
+  // That was survivable while every operand was a narrow event-derived set;
+  // a "never did X" operand is most of the project's profiles, so limiting it
+  // before the INTERSECT would cut the cohort down to an arbitrary slice —
+  // and at the preview's limit of 10, almost always to nothing. The count
+  // query below already wraps for the same reason.
+  const finalQuery = limit
+    ? `SELECT profile_id FROM (${combinedQuery}) LIMIT ${limit}`
+    : combinedQuery;
 
   const results = await chQuery<{ profile_id: string }>(finalQuery);
   return results.map((r) => r.profile_id);
@@ -211,24 +423,20 @@ export async function countEventBasedCohort(
   projectId: string,
   definition: EventBasedCohortDefinition,
 ): Promise<number> {
-  const { events, operator } = definition.criteria;
-
-  const queries = events.map((eventCriteria) =>
-    buildEventCriteriaQuery(projectId, eventCriteria),
-  );
-
-  const combinedQuery =
-    operator === 'and'
-      ? queries.join(' INTERSECT ')
-      : queries.join(' UNION DISTINCT ');
+  const combinedQuery = buildEventBasedCohortQuery(projectId, definition);
 
   const countQuery = `SELECT count() as count FROM (${combinedQuery})`;
   const results = await chQuery<{ count: number }>(countQuery);
   return results[0]?.count ?? 0;
 }
 
+// Known gap, not fixed here: the switch below has no case for 'inCohort' or
+// 'notInCohort', so one of those inside a cohort definition is dropped without
+// an error and the cohort silently widens. The same operators do work at
+// report level — see buildCohortClause in filter-where.service.ts.
 function getProfileFiltersWhereClause(
   filters: IChartEventFilter[],
+  { latestPerProfileKey }: { latestPerProfileKey?: string } = {},
 ): Record<string, string> {
   const where: Record<string, string> = {};
 
@@ -244,14 +452,20 @@ function getProfileFiltersWhereClause(
       return;
     }
 
-    const normalizedName = name.replace(/^profile\./, 'profiles.');
-    let columnAccess: string;
+    let columnAccess = profileColumnAccess(name);
 
-    if (normalizedName.startsWith('profiles.properties.')) {
-      const propKey = normalizedName.replace('profiles.properties.', '');
-      columnAccess = `profiles.properties['${propKey}']`;
-    } else {
-      columnAccess = normalizedName;
+    if (latestPerProfileKey) {
+      // Resolve the profile's newest row inside a GROUP BY instead of
+      // reading through FINAL. The key is shared by every wrapped column
+      // (see buildProfileCohortHavingClause), so all aggregates read the
+      // SAME winning row: last_seen_at is the table's version column but is
+      // not unique, and per-column tie-breaking would let equal-version
+      // rows with conflicting fields produce a synthetic combination no
+      // stored row contains. FINAL breaks the same ties by part order,
+      // which is not derivable from the data and can shift under a
+      // background merge — the shared value-tuple tie-break is
+      // deterministic instead.
+      columnAccess = `argMax(${columnAccess}, ${latestPerProfileKey})`;
     }
 
     switch (operator) {
@@ -354,27 +568,14 @@ export async function computePropertyBasedCohort(
   definition: PropertyBasedCohortDefinition,
   limit?: number,
 ): Promise<string[]> {
-  const { properties, operator } = definition.criteria;
-  const filterWhere = getProfileFiltersWhereClause(properties);
-  const filterClauses = Object.values(filterWhere);
-
-  if (filterClauses.length === 0) {
+  if (!buildProfileCohortHavingClause(definition)) {
     return [];
   }
 
-  const filterClause = filterClauses.join(
-    operator === 'and' ? ' AND ' : ' OR ',
+  const results = await chQuery<{ profile_id: string }>(
+    buildPropertyBasedCohortQuery(projectId, definition, limit),
+    PROFILE_COHORT_QUERY_SETTINGS,
   );
-
-  const query = `
-    SELECT id as profile_id
-    FROM ${TABLE_NAMES.profiles} FINAL
-    WHERE project_id = ${sqlstring.escape(projectId)}
-      AND (${filterClause})
-    ${limit ? `LIMIT ${limit}` : ''}
-  `;
-
-  const results = await chQuery<{ profile_id: string }>(query);
   return results.map((r) => r.profile_id);
 }
 
@@ -382,26 +583,14 @@ export async function countPropertyBasedCohort(
   projectId: string,
   definition: PropertyBasedCohortDefinition,
 ): Promise<number> {
-  const { properties, operator } = definition.criteria;
-  const filterWhere = getProfileFiltersWhereClause(properties);
-  const filterClauses = Object.values(filterWhere);
-
-  if (filterClauses.length === 0) {
+  if (!buildProfileCohortHavingClause(definition)) {
     return 0;
   }
 
-  const filterClause = filterClauses.join(
-    operator === 'and' ? ' AND ' : ' OR ',
+  const results = await chQuery<{ count: number }>(
+    `SELECT count() as count FROM (${buildPropertyBasedCohortQuery(projectId, definition)})`,
+    PROFILE_COHORT_QUERY_SETTINGS,
   );
-
-  const query = `
-    SELECT count() as count
-    FROM ${TABLE_NAMES.profiles} FINAL
-    WHERE project_id = ${sqlstring.escape(projectId)}
-      AND (${filterClause})
-  `;
-
-  const results = await chQuery<{ count: number }>(query);
   return results[0]?.count ?? 0;
 }
 
@@ -599,21 +788,25 @@ export async function getProfilesInCohort(
   return new Set(profileIds);
 }
 
+/**
+ * Enqueue a recompute for a cohort.
+ *
+ * Uses `deduplication` rather than a fixed `jobId`. A fixed jobId makes BullMQ
+ * short-circuit `add` for as long as *any* record for that id exists in Redis —
+ * and `removeOnComplete: { age }` is not a TTL, it only trims on some other
+ * job in the queue finishing. That deadlocks: nothing can be added because the
+ * completed record is still there, and the record is never collected because
+ * nothing gets added. The deduplication key, in contrast, is released by
+ * `moveToFinished` on both completion and terminal failure, so it only collapses
+ * a compute that is genuinely still in flight.
+ */
 export async function enqueueCohortCompute(cohortId: string): Promise<void> {
   await cohortComputeQueue.add(
     'cohortCompute',
     { cohortId },
     {
-      jobId: `cohort-${cohortId}`,
-      removeOnComplete: { age: 3600 },
-      removeOnFail: { age: 86400 },
+      deduplication: { id: `cohort-${cohortId}` },
     },
-  );
-}
-
-export async function removeCohortComputeJob(cohortId: string): Promise<void> {
-  await cohortComputeQueue.remove(
-    `cohort-${cohortId}`,
   );
 }
 

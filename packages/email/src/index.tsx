@@ -8,20 +8,18 @@ import { db } from '@openpanel/db';
 import { type TemplateKey, type Templates, templates } from './emails';
 import { getUnsubscribeUrl } from './unsubscribe';
 
+/** a***@example.com, enough to correlate a log line without exposing the address. */
+function redactEmail(email: string): string {
+  const at = email.indexOf('@');
+  if (at <= 0) {
+    return '***';
+  }
+  return `${email[0]}***${email.slice(at)}`;
+}
+
 export * from './unsubscribe';
 
 const FROM = process.env.EMAIL_SENDER ?? 'hello@openpanel.dev';
-
-function maskEmail(email: string) {
-  const parts = email.split('@');
-  const [localPart, domain] = parts;
-
-  if (parts.length !== 2 || !localPart || !domain || /\s/.test(email)) {
-    return '[REDACTED]';
-  }
-
-  return `${localPart.charAt(0)}***@${domain}`;
-}
 
 export type EmailData<T extends TemplateKey> = z.infer<Templates[T]['schema']>;
 export type EmailTemplate = keyof Templates;
@@ -73,7 +71,7 @@ export async function sendEmail<T extends TemplateKey>(
     if (unsubscribed) {
       console.log('Email delivery skipped', {
         templateKey,
-        to: maskEmail(to),
+        to: redactEmail(to),
         category: template.category,
         reason: 'unsubscribed',
       });
@@ -108,7 +106,7 @@ export async function sendEmail<T extends TemplateKey>(
     } catch {
       console.error('Email delivery failed', {
         templateKey,
-        to: maskEmail(to),
+        to: redactEmail(to),
         reason: 'smtp_provider_error',
       });
       return null;
@@ -118,7 +116,7 @@ export async function sendEmail<T extends TemplateKey>(
   if (!process.env.RESEND_API_KEY) {
     console.warn('Email delivery skipped', {
       templateKey,
-      to: maskEmail(to),
+      to: redactEmail(to),
       reason: 'resend_api_key_missing',
     });
     return null;
@@ -142,7 +140,7 @@ export async function sendEmail<T extends TemplateKey>(
     // SECURITY(WASL): Do not log the original provider error.
     console.error('Email delivery failed', {
       templateKey,
-      to: maskEmail(to),
+      to: redactEmail(to),
       reason: 'provider_error',
     });
     return null;

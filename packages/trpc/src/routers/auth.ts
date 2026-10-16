@@ -22,10 +22,15 @@ import {
 } from '@openpanel/auth';
 import { generateSecureId } from '@openpanel/common/server';
 import {
+  createShareAccessToken,
+  shareAccessCookieName,
+} from '@openpanel/common/server/share-access';
+import {
   connectUserToOrganization,
   db,
   decrypt,
   encrypt,
+  getIsRegistrationAllowed,
   getShareOverviewById,
   getUserAccount,
 } from '@openpanel/db';
@@ -75,39 +80,24 @@ async function consumeInviteForUser(
   }
 }
 
-async function getIsRegistrationAllowed(inviteId?: string | null) {
-  // ALLOW_REGISTRATION is always undefined in cloud
-  if (process.env.ALLOW_REGISTRATION === undefined) {
-    return true;
-  }
-
-  // Self-hosting logic
-  // 1. First user is always allowed
-  const count = await db.user.count();
-  if (count === 0) {
-    return true;
-  }
-
-  // 2. If there is an invite, check if it is valid
-  if (inviteId) {
-    if (process.env.ALLOW_INVITATION === 'false') {
-      return false;
-    }
-
-    const invite = await db.invite.findUnique({
-      where: {
-        id: inviteId,
-      },
-    });
-
-    return !!invite;
-  }
-
-  // 3. Otherwise, check if general registration is allowed
-  return process.env.ALLOW_REGISTRATION !== 'false';
-}
-
 export const authRouter = createTRPCRouter({
+  /**
+   * Which optional OAuth-backed features this instance has credentials for.
+   * The dashboard uses it to hide the social login buttons and the Search
+   * Console settings on self-hosted instances that haven't configured them.
+   * Booleans only: the client id/secret never leave the API.
+   */
+  providers: publicProcedure.query(() => ({
+    google: Boolean(
+      process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_REDIRECT_URI
+    ),
+    github: Boolean(
+      process.env.GITHUB_CLIENT_ID && process.env.GITHUB_REDIRECT_URI
+    ),
+    gsc: Boolean(
+      process.env.GOOGLE_CLIENT_ID && process.env.GSC_GOOGLE_REDIRECT_URI
+    ),
+  })),
   signOut: publicProcedure.mutation(async ({ ctx }) => {
     deleteSessionTokenCookie(ctx.setCookie);
     if (ctx.session?.session?.id) {
@@ -117,14 +107,11 @@ export const authRouter = createTRPCRouter({
   signInOAuth: publicProcedure
     .input(z.object({ provider: zProvider, inviteId: z.string().nullish() }))
     .mutation(async ({ input, ctx }) => {
-      const isRegistrationAllowed = await getIsRegistrationAllowed(
-        input.inviteId
-      );
-
-      if (!isRegistrationAllowed) {
-        throw new TRPCAccessError('Registrations are not allowed');
-      }
-
+      // NOTE: no registration check here. At this point we have no identity for
+      // the caller — the IdP hasn't been hit yet — so we cannot tell a returning
+      // user from a new sign-up. Gating here locks out every existing OAuth user
+      // as soon as their session expires. The check lives in the OAuth callback
+      // (`handleNewUser`), which is the only place we know the user is new.
       const { provider } = input;
 
       if (input.inviteId) {
@@ -171,6 +158,12 @@ export const authRouter = createTRPCRouter({
       };
     }),
   signUpEmail: publicProcedure
+    .use(
+      rateLimitMiddleware({
+        max: 5,
+        windowMs: 60_000,
+      })
+    )
     .input(zSignUpEmail)
     .mutation(async ({ input, ctx }) => {
       const isRegistrationAllowed = await getIsRegistrationAllowed(
@@ -648,19 +641,15 @@ export const authRouter = createTRPCRouter({
     .mutation(async ({ input, ctx }) => {
       const { password, shareId, shareType = 'overview' } = input;
       let share: { password: string | null; public: boolean } | null = null;
-      let cookieName = '';
 
       if (shareType === 'overview') {
         share = await getShareOverviewById(shareId);
-        cookieName = `shared-overview-${shareId}`;
       } else if (shareType === 'dashboard') {
         const { getShareDashboardById } = await import('@openpanel/db');
         share = await getShareDashboardById(shareId);
-        cookieName = `shared-dashboard-${shareId}`;
       } else if (shareType === 'report') {
         const { getShareReportById } = await import('@openpanel/db');
         share = await getShareReportById(shareId);
-        cookieName = `shared-report-${shareId}`;
       }
 
       if (!share) {
@@ -681,10 +670,21 @@ export const authRouter = createTRPCRouter({
         throw new TRPCAccessError('Incorrect password');
       }
 
-      ctx.setCookie(cookieName, '1', {
-        maxAge: 60 * 60 * 24 * 7,
-        ...COOKIE_OPTIONS,
-      });
+      // The cookie value is an HMAC bound to this share and its current
+      // password hash; the share procedures verify it rather than trusting
+      // that the cookie exists.
+      ctx.setCookie(
+        shareAccessCookieName(shareType, shareId),
+        createShareAccessToken({
+          type: shareType,
+          id: shareId,
+          passwordHash: share.password,
+        }),
+        {
+          maxAge: 60 * 60 * 24 * 7,
+          ...COOKIE_OPTIONS,
+        },
+      );
 
       return true;
     }),
