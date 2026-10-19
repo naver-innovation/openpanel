@@ -1,7 +1,7 @@
 import { DateTime, toDots } from '@openpanel/common';
 import { cacheable } from '@openpanel/redis';
 import type { IChartEventFilter } from '@openpanel/validation';
-import { assocPath, last, mergeDeepRight, path, uniq } from 'ramda';
+import { assocPath, last, mergeDeepRight, path } from 'ramda';
 import sqlstring from 'sqlstring';
 import { v4 as uuid } from 'uuid';
 import { botBuffer, eventBuffer } from '../buffers';
@@ -16,8 +16,9 @@ import { clix, type Query } from '../clickhouse/query-builder';
 import type { EventMeta, Prisma } from '../prisma-client';
 import { db } from '../prisma-client';
 import { createSqlBuilder, type SqlBuilderObject } from '../sql-builder';
+import { resolveMaxLookbackDays } from './lookback';
 import { getEventFiltersWhereClause } from './chart.service';
-import { buildFilterWhere } from './filter-where.service';
+import { buildFilterWhere, profileJoinColumns } from './filter-where.service';
 import type { IServiceProfile, IServiceUpsertProfile } from './profile.service';
 import {
   getProfileById,
@@ -90,6 +91,11 @@ export interface IClickhouseEvent {
   brand: string;
   model: string;
   imported_at: string | null;
+  // Ingestion (ClickHouse-insert) time. Set explicitly at insert time; the
+  // column DEFAULTs to created_at for rows that omit it. Used as the cursor for
+  // object-store exports. Optional here because most read queries don't select
+  // it.
+  inserted_at?: string;
   sdk_name: string;
   sdk_version: string;
   revenue?: number;
@@ -400,6 +406,10 @@ export async function createEvent(payload: IServiceCreateEventPayload) {
     referrer_name: payload.referrerName ?? '',
     referrer_type: payload.referrerType ?? '',
     imported_at: null,
+    // Ingestion time, used as the export cursor. Stamped here rather than via the
+    // column DEFAULT so backdated events (server-side, offline, past timestamps)
+    // still get a real, monotonic-ish insert time instead of their event time.
+    inserted_at: DateTime.utc().toFormat('yyyy-MM-dd HH:mm:ss.SSS'),
     sdk_name: payload.sdkName ?? '',
     sdk_version: payload.sdkVersion ?? '',
     revenue: payload.revenue,
@@ -480,6 +490,11 @@ export interface GetEventListOptions {
   dateIntervalInDays?: number;
 }
 
+/**
+ * Fetches a page of events matching the given filters/date range, ordered
+ * newest first. Falls back to a default recent-days cursor window when no
+ * cursor or explicit date bound is provided.
+ */
 export async function getEventList(options: GetEventListOptions) {
   const {
     cursor,
@@ -499,7 +514,11 @@ export async function getEventList(options: GetEventListOptions) {
   } = options;
   const { sb, getSql, join } = createSqlBuilder();
 
-  const MAX_DATE_INTERVAL_IN_DAYS = 365 * 5;
+  // Deployment-tunable ceiling for the empty-result lookback (see lookback.ts).
+  const MAX_DATE_INTERVAL_IN_DAYS = resolveMaxLookbackDays(
+    'EVENT_LIST_MAX_LOOKBACK_DAYS',
+    365 * 5,
+  );
   // Cap the date interval to prevent infinity
   const safeDateIntervalInDays = Math.min(
     dateIntervalInDays,
@@ -513,7 +532,7 @@ export async function getEventList(options: GetEventListOptions) {
     sb.where.cursor = `created_at < ${sqlstring.escape(formatClickhouseDate(cursor))}`;
   }
 
-  if (!(cursor || (startDate && endDate))) {
+  if (cursor === undefined && !startDate && !endDate) {
     sb.where.cursorWindow = `created_at >= toDateTime64(${sqlstring.escape(formatClickhouseDate(new Date()))}, 3) - INTERVAL ${safeDateIntervalInDays} DAY`;
   }
 
@@ -651,8 +670,11 @@ export async function getEventList(options: GetEventListOptions) {
     sb.where.cohortId = `profile_id IN (SELECT profile_id FROM ${TABLE_NAMES.cohort_members} FINAL WHERE cohort_id = ${sqlstring.escape(cohortId)} AND project_id = ${sqlstring.escape(projectId)})`;
   }
 
-  if (startDate && endDate) {
-    sb.where.created_at = `toDate(created_at) BETWEEN toDate('${formatClickhouseDate(startDate)}') AND toDate('${formatClickhouseDate(endDate)}')`;
+  if (startDate) {
+    sb.where.startDate = `created_at >= toDateTime64(${sqlstring.escape(startDate.toISOString().replace('T', ' ').replace('Z', ''))}, 3)`;
+  }
+  if (endDate) {
+    sb.where.endDate = `created_at <= toDateTime64(${sqlstring.escape(endDate.toISOString().replace('T', ' ').replace('Z', ''))}, 3)`;
   }
 
   if (events && events.length > 0) {
@@ -674,7 +696,7 @@ export async function getEventList(options: GetEventListOptions) {
       .map((f) => f.name.replace('profile.', ''));
 
     if (profileFilters.length > 0) {
-      sb.joins.profiles = `LEFT ANY JOIN (SELECT id, ${uniq(profileFilters.map((f) => f.split('.')[0])).join(', ')} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile on profile.id = profile_id`;
+      sb.joins.profiles = `LEFT ANY JOIN (SELECT ${profileJoinColumns(profileFilters).join(', ')} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile on profile.id = profile_id`;
     }
 
     // Join groups table if any filter uses group fields
@@ -711,6 +733,10 @@ export async function getEventList(options: GetEventListOptions) {
   return data;
 }
 
+/**
+ * Counts events matching the given filters/date range, using the same
+ * where-clause construction as getEventList.
+ */
 export async function getEventsCount({
   projectId,
   profileId,
@@ -735,8 +761,11 @@ export async function getEventsCount({
     sb.where.cohortId = `profile_id IN (SELECT profile_id FROM ${TABLE_NAMES.cohort_members} FINAL WHERE cohort_id = ${sqlstring.escape(cohortId)} AND project_id = ${sqlstring.escape(projectId)})`;
   }
 
-  if (startDate && endDate) {
-    sb.where.created_at = `toDate(created_at) BETWEEN toDate('${formatClickhouseDate(startDate)}') AND toDate('${formatClickhouseDate(endDate)}')`;
+  if (startDate) {
+    sb.where.startDate = `created_at >= toDateTime64(${sqlstring.escape(startDate.toISOString().replace('T', ' ').replace('Z', ''))}, 3)`;
+  }
+  if (endDate) {
+    sb.where.endDate = `created_at <= toDateTime64(${sqlstring.escape(endDate.toISOString().replace('T', ' ').replace('Z', ''))}, 3)`;
   }
 
   if (events && events.length > 0) {
@@ -758,7 +787,7 @@ export async function getEventsCount({
       .map((f) => f.name.replace('profile.', ''));
 
     if (profileFilters.length > 0) {
-      sb.joins.profiles = `LEFT ANY JOIN (SELECT id, ${uniq(profileFilters.map((f) => f.split('.')[0])).join(', ')} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile on profile.id = profile_id`;
+      sb.joins.profiles = `LEFT ANY JOIN (SELECT ${profileJoinColumns(profileFilters).join(', ')} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile on profile.id = profile_id`;
     }
 
     // Join groups table if any filter uses group fields
@@ -897,7 +926,7 @@ class EventService {
       .where('project_id', '=', projectId)
       .when(profileFilters.length > 0, (q) => {
         q.leftJoin(
-          `(SELECT id, ${uniq(profileFilters.map((f) => f.split('.')[0])).join(', ')} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile`,
+          `(SELECT ${profileJoinColumns(profileFilters).join(', ')} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile`,
           'profile.id = e.profile_id'
         );
       })
@@ -1246,14 +1275,23 @@ export async function listEventPropertiesCore(input: {
   columns: readonly string[];
   properties: Array<{ property_key: string; event_name: string }>;
 }> {
+  // GROUP BY rather than DISTINCT: both return the same set of
+  // (property_key, name) pairs, but a multi-column DISTINCT cannot be matched
+  // against the epv_keys aggregating projection, so it degrades to a full scan
+  // of the project's MV slice. `name` is a tie-breaker for the ORDER BY —
+  // without it the LIMIT slices an arbitrary subset of the rows sharing a
+  // property_key, which is also what made the two spellings return different
+  // windows.
   const builder = clix(ch)
     .select<{ property_key: string; event_name: string }>([
-      'distinct property_key',
+      'property_key',
       'name as event_name',
     ])
     .from(TABLE_NAMES.event_property_values_mv)
     .where('project_id', '=', input.projectId)
+    .groupBy(['property_key', 'name'])
     .orderBy('property_key', 'ASC')
+    .orderBy('name', 'ASC')
     .limit(500);
 
   if (input.eventName) {
@@ -1308,9 +1346,7 @@ export interface QueryEventsInput {
   limit?: number;
 }
 
-export async function queryEventsCore(
-  input: QueryEventsInput
-): Promise<IClickhouseEvent[]> {
+export function buildQueryEventsQuery(input: QueryEventsInput) {
   const builder = clix(ch)
     .select<IClickhouseEvent>([])
     .from(TABLE_NAMES.events)
@@ -1411,5 +1447,13 @@ export async function queryEventsCore(
     }
   }
 
-  return builder.limit(input.limit ?? 20).execute();
+  // Without an explicit order ClickHouse returns whatever it reads first, so a
+  // bare LIMIT hands back an arbitrary slice of the window, not the newest.
+  return builder.orderBy('created_at', 'DESC').limit(input.limit ?? 20);
+}
+
+export async function queryEventsCore(
+  input: QueryEventsInput
+): Promise<IClickhouseEvent[]> {
+  return buildQueryEventsQuery(input).execute();
 }

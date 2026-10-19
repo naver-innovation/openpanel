@@ -118,22 +118,30 @@ export class ConversionService {
 
     const eventA = events[0]!;
     const eventB = events[1]!;
+    // Qualify with 'events' so event-level `properties[...]` becomes
+    // `events.properties[...]` — required when the conversion query also
+    // joins the profiles table (which exposes a `properties` column).
+    // Without the qualifier ClickHouse fails with "ambiguous identifier
+    // 'properties'" whenever a step filters on properties.X while a
+    // breakdown is on profile.properties.Y.
     const whereA = Object.values(
-      getEventFiltersWhereClause(eventA.filters, projectId),
+      getEventFiltersWhereClause(eventA.filters, projectId, 'events'),
     ).join(' AND ');
     const whereB = Object.values(
-      getEventFiltersWhereClause(eventB.filters, projectId),
+      getEventFiltersWhereClause(eventB.filters, projectId, 'events'),
     ).join(' AND ');
 
     const funnelWindowSeconds = funnelWindow * 3600;
 
     // Build funnel conditions
+    const eventAName = sqlstring.escape(eventA.name);
+    const eventBName = sqlstring.escape(eventB.name);
     const conditionA = whereA
-      ? `(events.name = '${eventA.name}' AND ${whereA})`
-      : `events.name = '${eventA.name}'`;
+      ? `(events.name = ${eventAName} AND ${whereA})`
+      : `events.name = ${eventAName}`;
     const conditionB = whereB
-      ? `(events.name = '${eventB.name}' AND ${whereB})`
-      : `events.name = '${eventB.name}'`;
+      ? `(events.name = ${eventBName} AND ${whereB})`
+      : `events.name = ${eventBName}`;
 
     const groupJoin = needsGroupArrayJoin
       ? `ARRAY JOIN groups AS _group_id LEFT ANY JOIN (SELECT id, name, type, properties FROM ${TABLE_NAMES.groups} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) AS _g ON _g.id = _group_id`
@@ -169,9 +177,9 @@ export class ConversionService {
         ${profileJoin}
         ${groupJoin}
         ${cohortJoinsSql}
-        WHERE project_id = '${projectId}'
-          AND events.name IN ('${eventA.name}', '${eventB.name}')
-          AND created_at BETWEEN toDateTime('${startDate}') AND toDateTime('${endDate}')
+        WHERE project_id = ${sqlstring.escape(projectId)}
+          AND events.name IN (${eventAName}, ${eventBName})
+          AND created_at BETWEEN toDateTime(${sqlstring.escape(startDate)}) AND toDateTime(${sqlstring.escape(endDate)})
         GROUP BY ${group}${breakdownExpressions.length ? `, ${breakdownExpressions.join(', ')}` : ''})
       `),
       )
