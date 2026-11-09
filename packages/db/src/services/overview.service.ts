@@ -1058,7 +1058,9 @@ export class OverviewService {
       .orderBy('session_id', 'ASC')
       .orderBy('created_at', 'ASC');
 
-    // Intermediate CTE to compute deduped paths
+    // Intermediate CTE to compute deduped paths. arrayCompact drops consecutive
+    // duplicates in linear time; a lambda that indexes its own groupArray is
+    // quadratic in the session length and fails on very long sessions.
     const pathsDedupedCTE = clix(this.client, timezone)
       .with('ordered_events', orderedEventsQuery)
       .select<{
@@ -1067,11 +1069,7 @@ export class OverviewService {
       }>([
         'session_id',
         `arraySlice(
-          arrayFilter(
-            (x, i) -> i = 1 OR x != paths_raw[i - 1],
-            groupArray(path) as paths_raw,
-            arrayEnumerate(paths_raw)
-          ),
+          arrayCompact(groupArray(path)),
           1, ${steps}
         ) as paths_deduped`,
       ])

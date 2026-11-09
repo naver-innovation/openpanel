@@ -417,7 +417,9 @@ export class SankeyService {
           )
         : null;
 
-    // 4. Build deduped events CTE
+    // 4. Build deduped events CTE. arrayCompact drops consecutive duplicates in
+    // linear time; a lambda that indexes its own groupArray is quadratic in the
+    // session length and fails on very long sessions.
     const eventsDedupedCTE = clix(this.client, timezone)
       .with('ordered_events', orderedEventsQuery)
       .select<{
@@ -425,11 +427,7 @@ export class SankeyService {
         events_deduped: string[];
       }>([
         'session_id',
-        `arrayFilter(
-          (x, i) -> i = 1 OR x != events_raw[i - 1],
-          groupArray(event_name) as events_raw,
-          arrayEnumerate(events_raw)
-        ) as events_deduped`,
+        'arrayCompact(groupArray(event_name)) as events_deduped',
       ])
       .from('ordered_events')
       .groupBy(['session_id']);
